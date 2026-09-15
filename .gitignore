@@ -87,6 +87,16 @@ data/
 logs/
 *.log
 
+# Re-include the source-code data pipeline (unignore after the data/ rule above)
+!src/data/
+!src/data/**
+# ...but keep cache/build artifacts out
+src/data/__pycache__/
+
+# ── Generated dataset output (regenerate with src/data/run_all.py) ───────────
+src/data/processed/
+src/data/output/
+
 # ── Jupyter Notebooks (optional: remove if you want to commit notebooks) ──────
 # .ipynb_checkpoints/
 
