@@ -1,30 +1,26 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ChevronLeft,
   ChevronRight,
   Calendar as CalendarIcon,
-  List,
-  LayoutGrid,
   X,
   CheckCircle2,
-  Clock,
   RotateCcw,
   ExternalLink,
   AlertTriangle,
   Users,
   Wrench,
-  Filter,
   ClipboardList,
+  Search,
 } from 'lucide-react';
 import { calendarTasks } from '../mock/calendarMockData';
-import type { CalendarTask, CalTaskStatus } from '../mock/calendarMockData';
+import type { CalendarTask, CalTaskStatus, CalZone, CalCrew } from '../mock/calendarMockData';
 import { RiskBadge } from '../components/ui/StatusBadge';
-import { StatCard } from '../components/ui/StatCard';
-import type { RiskLevel, Zone, AssetType } from '../types';
+import type { RiskLevel, AssetType } from '../types';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ViewMode = 'month' | 'week' | 'list';
@@ -35,45 +31,51 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-function isoDate(d: Date): string {
-  return d.toISOString().split('T')[0];
-}
+// The "current" date for this demo
+const MOCK_TODAY = '2026-09-15';
+const MOCK_TODAY_DATE = new Date(2026, 8, 15); // Sept 15, 2026
 
-function todayStr(): string {
-  return isoDate(new Date());
-}
-
-const priorityColors: Record<string, { bg: string; border: string; text: string; dot: string }> = {
-  emergency: { bg: 'bg-red-500/20',    border: 'border-red-500/50',    text: 'text-red-300',    dot: 'bg-red-400' },
-  urgent:    { bg: 'bg-orange-500/20', border: 'border-orange-500/50', text: 'text-orange-300', dot: 'bg-orange-400' },
-  routine:   { bg: 'bg-blue-500/20',   border: 'border-blue-500/50',   text: 'text-blue-300',   dot: 'bg-blue-400' },
+// Risk-level event card colours — enterprise-readable, per spec
+const riskEventStyle: Record<RiskLevel, { bg: string; border: string; text: string; dot: string }> = {
+  critical: { bg: '#FEE2E2', border: '#FCA5A5', text: '#991B1B', dot: '#DC2626' },
+  high:     { bg: '#FFEDD5', border: '#FDBA74', text: '#9A3412', dot: '#F97316' },
+  medium:   { bg: '#FEF3C7', border: '#FCD34D', text: '#92400E', dot: '#EAB308' },
+  low:      { bg: '#DCFCE7', border: '#86EFAC', text: '#166534', dot: '#16A34A' },
 };
 
-const riskColorMap: Record<RiskLevel, string> = {
-  critical: '#ef4444',
-  high:     '#f97316',
-  medium:   '#eab308',
-  low:      '#22c55e',
-};
-
-const statusColors: Record<CalTaskStatus, string> = {
-  scheduled:   'text-slate-400',
-  in_progress: 'text-brand-400',
-  completed:   'text-green-400',
-  deferred:    'text-amber-400',
-  overdue:     'text-red-400',
-};
+// Legend dot colours
+const legendDots: { level: RiskLevel; label: string; color: string }[] = [
+  { level: 'critical', label: 'Critical', color: '#DC2626' },
+  { level: 'high',     label: 'High',     color: '#F97316' },
+  { level: 'medium',   label: 'Medium',   color: '#EAB308' },
+  { level: 'low',      label: 'Low',      color: '#16A34A' },
+];
 
 const statusLabels: Record<CalTaskStatus, string> = {
   scheduled:   'Scheduled',
   in_progress: 'In Progress',
   completed:   'Completed',
-  deferred:    'Deferred',
   overdue:     'Overdue',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Task event chip (used in month + week cells)
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function isoDate(y: number, m: number, d: number): string {
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+function getDaysInMonth(y: number, m: number): number {
+  return new Date(y, m + 1, 0).getDate();
+}
+
+function getFirstDayOfWeek(y: number, m: number): number {
+  return new Date(y, m, 1).getDay();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Event chip — risk-level coloured, enterprise readable
 // ─────────────────────────────────────────────────────────────────────────────
 
 function EventChip({
@@ -85,38 +87,40 @@ function EventChip({
   onClick: (t: CalendarTask) => void;
   isSelected: boolean;
 }) {
-  const c = priorityColors[task.priority];
-  const isOverdue =
-    task.date < todayStr() &&
-    task.status !== 'completed' &&
-    task.status !== 'deferred';
+  const c = riskEventStyle[task.risk_level];
 
   return (
     <button
-      onClick={() => onClick(task)}
-      className={`
-        w-full text-left px-2 py-1 rounded text-[11px] font-medium leading-tight
-        border transition-all duration-150 cursor-pointer
-        ${isOverdue ? 'bg-red-500/25 border-red-500/60 text-red-300' : `${c.bg} ${c.border} ${c.text}`}
-        ${isSelected ? 'ring-2 ring-brand-400 ring-offset-1 ring-offset-navy-800' : 'hover:brightness-125'}
-      `}
-      aria-label={`${task.title} - ${task.asset_id}`}
+      onClick={(e) => { e.stopPropagation(); onClick(task); }}
+      className="cal-event-chip"
+      style={{
+        background: c.bg,
+        borderColor: c.border,
+        color: c.text,
+        outline: isSelected ? '2px solid #2457b8' : 'none',
+        outlineOffset: isSelected ? '1px' : '0',
+      }}
       title={`${task.title}\n${task.asset_id} · ${task.zone}\n${task.start_time}–${task.end_time}`}
+      aria-label={`${task.title} - ${task.asset_id}`}
     >
-      <div className="flex items-center gap-1 truncate">
+      {/* Asset ID row with dot */}
+      <div className="cal-event-asset">
         <span
-          className="w-1.5 h-1.5 rounded-full shrink-0"
-          style={{ background: riskColorMap[task.risk_level] }}
+          className="cal-event-dot"
+          style={{ background: c.dot }}
         />
-        <span className="truncate">{task.asset_id}</span>
+        <span className="cal-event-asset-id">{task.asset_id}</span>
       </div>
-      <div className="truncate opacity-80 mt-0.5">{task.title}</div>
+      {/* Title */}
+      <div className="cal-event-title">{task.title}</div>
+      {/* Time */}
+      <div className="cal-event-time">{task.start_time} - {task.end_time}</div>
     </button>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Detail drawer
+// Detail drawer (right slide-in panel)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function DetailDrawer({
@@ -132,7 +136,6 @@ function DetailDrawer({
   onReschedule: (id: string) => void;
   statuses: Record<string, CalTaskStatus>;
 }) {
-  // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', handler);
@@ -141,175 +144,122 @@ function DetailDrawer({
 
   const visible = task !== null;
   const status = task ? (statuses[task.id] ?? task.status) : 'scheduled';
-  const isOverdue =
-    task &&
-    task.date < todayStr() &&
-    status !== 'completed' &&
-    status !== 'deferred';
 
   return (
     <>
-      {/* Backdrop (mobile only) */}
+      {/* Backdrop overlay — only when drawer is open */}
       {visible && (
         <div
-          className="fixed inset-0 bg-black/40 z-30 lg:hidden"
+          className="cal-drawer-overlay"
           onClick={onClose}
           aria-hidden="true"
         />
       )}
 
-      {/* Drawer */}
       <aside
-        className={`
-          fixed top-0 right-0 h-full w-full sm:w-[420px] z-40
-          bg-navy-900 border-l border-surface-border
-          flex flex-col shadow-2xl
-          transform transition-transform duration-300 ease-out
-          ${visible ? 'translate-x-0' : 'translate-x-full'}
-        `}
+        className={`cal-drawer ${visible ? 'cal-drawer-open' : ''}`}
         aria-label="Task detail panel"
+        role="complementary"
       >
         {task && (
           <>
-            {/* Drawer header */}
-            <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-surface-border">
-              <div className="min-w-0">
-                <p className="text-xs font-mono text-slate-500 mb-0.5">{task.id}</p>
-                <h2 className="text-base font-bold text-white leading-snug">{task.title}</h2>
-                <p className="text-xs text-slate-400 mt-0.5 capitalize">
-                  {task.maintenance_type}
-                </p>
+            {/* Header */}
+            <div className="cal-drawer-header">
+              <div style={{ minWidth: 0 }}>
+                <p className="cal-drawer-task-id">{task.id}</p>
+                <h2 className="cal-drawer-task-title">{task.title}</h2>
+                <p className="cal-drawer-task-mtype">{task.maintenance_type}</p>
               </div>
               <button
                 onClick={onClose}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10
-                           transition-colors shrink-0 mt-0.5"
-                aria-label="Close drawer"
+                className="cal-drawer-close-btn"
+                aria-label="Close panel"
               >
-                <X size={17} />
+                <X size={16} />
               </button>
             </div>
 
-            {/* Status + Risk row */}
-            <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-surface-border/50
-                            bg-navy-850">
+            {/* Badges row */}
+            <div className="cal-drawer-badges">
               <RiskBadge level={task.risk_level} />
-              <span
-                className={`text-xs font-semibold px-2 py-0.5 rounded-full border capitalize
-                  ${priorityColors[task.priority].bg} ${priorityColors[task.priority].border}
-                  ${priorityColors[task.priority].text}`}
-              >
-                {task.priority}
-              </span>
-              <span className={`text-xs font-semibold capitalize ${statusColors[status]}`}>
-                {isOverdue ? '⚠ Overdue' : statusLabels[status]}
+              <span className="cal-drawer-status-badge">
+                {statusLabels[status]}
               </span>
             </div>
 
-            {/* Scrollable body */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+            {/* Body */}
+            <div className="cal-drawer-body">
+              <DrawerSection icon={<CalendarIcon size={13} />} title="Schedule">
+                <DrawerRow label="Date" value={task.date} />
+                <DrawerRow label="Start" value={task.start_time} />
+                <DrawerRow label="End" value={task.end_time} />
+                <DrawerRow label="Duration" value={`${task.duration_hours}h`} />
+              </DrawerSection>
 
-              {/* Datetime */}
-              <Section icon={<CalendarIcon size={13} />} title="Schedule">
-                <Row label="Date" value={task.date} />
-                <Row label="Start" value={task.start_time} />
-                <Row label="End" value={task.end_time} />
-                <Row label="Duration" value={`${task.duration_hours}h`} />
-                {isOverdue && (
-                  <div className="mt-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20
-                                  rounded-lg px-3 py-2">
-                    ⚠ This task is past its scheduled date and not yet completed.
-                  </div>
-                )}
-              </Section>
+              <DrawerSection icon={<Wrench size={13} />} title="Asset">
+                <DrawerRow label="Asset ID" value={task.asset_id} mono />
+                <DrawerRow label="Asset Name" value={task.asset_name} />
+                <DrawerRow label="Type" value={task.asset_type.replace('_', ' ')} cap />
+                <DrawerRow label="Zone" value={task.zone} />
+                <DrawerRow label="Risk Score" value={`${task.risk_score}/100`} />
+                <DrawerRow label="Last Inspected" value={task.last_inspection} />
+              </DrawerSection>
 
-              {/* Asset info */}
-              <Section icon={<Wrench size={13} />} title="Asset">
-                <Row label="Asset ID"   value={task.asset_id} mono />
-                <Row label="Asset Name" value={task.asset_name} />
-                <Row label="Type"       value={task.asset_type.replace('_', ' ')} capitalize />
-                <Row label="Zone"       value={task.zone} />
-                <Row label="Risk Score" value={`${task.risk_score}/100`} />
-                <Row label="Last Inspected" value={task.last_inspection} />
-              </Section>
+              <DrawerSection icon={<Users size={13} />} title="Team">
+                <DrawerRow label="Crew" value={task.assigned_team} />
+                <DrawerRow label="Technician" value={task.technician} />
+              </DrawerSection>
 
-              {/* Team */}
-              <Section icon={<Users size={13} />} title="Team">
-                <Row label="Crew"       value={task.assigned_team} />
-                <Row label="Technician" value={task.technician} />
-              </Section>
+              <DrawerSection icon={<ClipboardList size={13} />} title="Work Details">
+                <p className="cal-drawer-sublabel">Description</p>
+                <p className="cal-drawer-subtext">{task.description}</p>
+                <p className="cal-drawer-sublabel" style={{ marginTop: 8 }}>Required Action</p>
+                <p className="cal-drawer-subtext">{task.action}</p>
+              </DrawerSection>
 
-              {/* Work details */}
-              <Section icon={<ClipboardList size={13} />} title="Work Details">
-                <div className="space-y-2 text-xs">
-                  <div>
-                    <p className="text-slate-500 mb-1">Description</p>
-                    <p className="text-slate-200 leading-relaxed">{task.description}</p>
-                  </div>
-                  <div>
-                    <p className="text-slate-500 mb-1">Required Action</p>
-                    <p className="text-slate-200 leading-relaxed">{task.action}</p>
-                  </div>
-                </div>
-              </Section>
+              <DrawerSection icon={<Users size={13} />} title="Customer Impact">
+                <DrawerRow label="Customers Affected" value={task.customers_affected.toLocaleString()} />
+              </DrawerSection>
 
-              {/* Impact */}
-              <Section icon={<Users size={13} />} title="Customer Impact">
-                <Row label="Customers Affected" value={task.customers_affected.toLocaleString()} />
-              </Section>
-
-              {/* Precautions */}
-              <Section icon={<AlertTriangle size={13} />} title="Precautionary Measures">
-                <ul className="space-y-1.5">
+              <DrawerSection icon={<AlertTriangle size={13} />} title="Precautionary Measures">
+                <ul className="cal-drawer-precautions">
                   {task.precautions.map((p, i) => (
-                    <li key={i} className="flex items-start gap-2 text-xs text-slate-300">
-                      <span className="text-amber-400 shrink-0 mt-0.5">•</span>
+                    <li key={i}>
+                      <span className="cal-drawer-precaution-dot">•</span>
                       {p}
                     </li>
                   ))}
                 </ul>
-              </Section>
+              </DrawerSection>
             </div>
 
-            {/* Action buttons */}
-            <div className="px-5 py-4 border-t border-surface-border flex flex-wrap gap-2">
+            {/* Actions */}
+            <div className="cal-drawer-actions">
               {status !== 'completed' && (
                 <button
                   onClick={() => onMarkComplete(task.id)}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold
-                             bg-green-500/20 text-green-400 border border-green-500/30
-                             hover:bg-green-500/30 transition-colors"
+                  className="cal-drawer-btn cal-drawer-btn-complete"
                 >
-                  <CheckCircle2 size={13} />
-                  Mark Complete
+                  <CheckCircle2 size={13} /> Mark Complete
                 </button>
               )}
               <button
                 onClick={() => onReschedule(task.id)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold
-                           bg-amber-500/20 text-amber-400 border border-amber-500/30
-                           hover:bg-amber-500/30 transition-colors"
+                className="cal-drawer-btn cal-drawer-btn-reschedule"
               >
-                <RotateCcw size={13} />
-                Reschedule
+                <RotateCcw size={13} /> Reschedule
               </button>
               <Link
                 to={`/assets/${task.asset_id}`}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold
-                           bg-brand-600/20 text-brand-400 border border-brand-500/30
-                           hover:bg-brand-600/30 transition-colors"
+                className="cal-drawer-btn cal-drawer-btn-asset"
               >
-                <ExternalLink size={13} />
-                View Asset
+                <ExternalLink size={13} /> View Asset
               </Link>
               <button
                 onClick={onClose}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold
-                           text-slate-400 border border-surface-border
-                           hover:bg-white/5 hover:text-slate-200 transition-colors ml-auto"
+                className="cal-drawer-btn cal-drawer-btn-close"
               >
-                <X size={13} />
-                Close
+                <X size={13} /> Close
               </button>
             </div>
           </>
@@ -319,23 +269,37 @@ function DetailDrawer({
   );
 }
 
-// Small helpers for drawer sections
-function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+function DrawerSection({
+  icon, title, children,
+}: {
+  icon: React.ReactNode; title: string; children: React.ReactNode;
+}) {
   return (
-    <div>
-      <div className="flex items-center gap-1.5 mb-2">
-        <span className="text-brand-400">{icon}</span>
-        <p className="text-xs font-semibold text-white uppercase tracking-wider">{title}</p>
+    <div className="cal-drawer-section">
+      <div className="cal-drawer-section-header">
+        <span className="cal-drawer-section-icon">{icon}</span>
+        <p className="cal-drawer-section-title">{title}</p>
       </div>
       {children}
     </div>
   );
 }
-function Row({ label, value, mono, capitalize }: { label: string; value: string; mono?: boolean; capitalize?: boolean }) {
+
+function DrawerRow({
+  label, value, mono, cap,
+}: {
+  label: string; value: string; mono?: boolean; cap?: boolean;
+}) {
   return (
-    <div className="flex items-start justify-between gap-3 text-xs py-1 border-b border-surface-border/30">
-      <span className="text-slate-500 shrink-0">{label}</span>
-      <span className={`font-medium text-right ${mono ? 'font-mono text-brand-300' : 'text-slate-200'} ${capitalize ? 'capitalize' : ''}`}>
+    <div className="cal-drawer-row">
+      <span className="cal-drawer-row-label">{label}</span>
+      <span
+        className="cal-drawer-row-value"
+        style={{
+          fontFamily: mono ? 'Consolas, monospace' : undefined,
+          textTransform: cap ? 'capitalize' : undefined,
+        }}
+      >
         {value}
       </span>
     </div>
@@ -343,7 +307,7 @@ function Row({ label, value, mono, capitalize }: { label: string; value: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Month grid view
+// Month view
 // ─────────────────────────────────────────────────────────────────────────────
 
 function MonthView({
@@ -355,98 +319,96 @@ function MonthView({
   selected: CalendarTask | null;
   onSelect: (t: CalendarTask) => void;
 }) {
-  const today = todayStr();
-  const firstDay = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const cells: (number | null)[] = [
-    ...Array(firstDay).fill(null),
-    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
-  ];
-  // Pad to full rows
-  while (cells.length % 7 !== 0) cells.push(null);
+  const firstDay = getFirstDayOfWeek(year, month);
+  const daysInMonth = getDaysInMonth(year, month);
+  const prevMonthDays = getDaysInMonth(year, month === 0 ? 11 : month - 1);
+
+  // Build cells: prev month filler + current month + next month filler
+  interface CellData {
+    day: number;
+    type: 'prev' | 'current' | 'next';
+    dateStr: string;
+  }
+
+  const cells: CellData[] = [];
+
+  // Previous month trailing days
+  for (let i = firstDay - 1; i >= 0; i--) {
+    const d = prevMonthDays - i;
+    const pm = month === 0 ? 11 : month - 1;
+    const py = month === 0 ? year - 1 : year;
+    cells.push({ day: d, type: 'prev', dateStr: isoDate(py, pm, d) });
+  }
+
+  // Current month
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ day: d, type: 'current', dateStr: isoDate(year, month, d) });
+  }
+
+  // Next month leading days
+  const remaining = 7 - (cells.length % 7);
+  if (remaining < 7) {
+    const nm = month === 11 ? 0 : month + 1;
+    const ny = month === 11 ? year + 1 : year;
+    for (let d = 1; d <= remaining; d++) {
+      cells.push({ day: d, type: 'next', dateStr: isoDate(ny, nm, d) });
+    }
+  }
 
   const tasksByDate: Record<string, CalendarTask[]> = {};
   for (const t of tasks) {
-    if (!tasksByDate[t.date]) tasksByDate[t.date] = [];
-    tasksByDate[t.date].push(t);
+    (tasksByDate[t.date] ??= []).push(t);
   }
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-surface-border">
-      {/* Weekday headers */}
-      <div className="grid grid-cols-7 border-b border-surface-border bg-navy-900">
+    <div className="cal-grid-container">
+      {/* Day-of-week header */}
+      <div className="cal-grid-header">
         {WEEKDAYS.map((d) => (
-          <div key={d} className="py-2 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+          <div key={d} className="cal-grid-header-cell">
             {d}
           </div>
         ))}
       </div>
 
-      {/* Day cells */}
-      <div className="grid grid-cols-7 bg-navy-800 flex-1">
-        {cells.map((day, idx) => {
-          if (day === null) {
-            return (
-              <div
-                key={`empty-${idx}`}
-                className="min-h-[110px] border-r border-b border-surface-border/40 bg-navy-850/50"
-              />
-            );
-          }
-          const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-          const dayTasks = tasksByDate[dateStr] ?? [];
-          const isToday = dateStr === today;
-          const isPast = dateStr < today;
-          const hasOverdue = dayTasks.some(
-            (t) => t.date < today && t.status !== 'completed' && t.status !== 'deferred',
-          );
+      {/* Grid cells */}
+      <div className="cal-grid-body">
+        {cells.map((cell, idx) => {
+          const dayTasks = tasksByDate[cell.dateStr] ?? [];
+          const isToday = cell.dateStr === MOCK_TODAY;
+          const isOtherMonth = cell.type !== 'current';
 
           return (
             <div
-              key={dateStr}
-              className={`
-                min-h-[110px] border-r border-b border-surface-border/40 p-1.5 flex flex-col gap-1
-                ${isPast && !isToday ? 'opacity-75' : ''}
-                ${isToday ? 'bg-brand-600/10' : ''}
-              `}
+              key={`${cell.dateStr}-${idx}`}
+              className={`cal-grid-cell ${isToday ? 'cal-grid-cell-today' : ''} ${isOtherMonth ? 'cal-grid-cell-other' : ''}`}
             >
               {/* Day number */}
-              <div className="flex items-center justify-between mb-0.5">
-                <span
-                  className={`
-                    text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full
-                    ${isToday ? 'bg-brand-600 text-white' : isPast ? 'text-slate-600' : 'text-slate-300'}
-                  `}
-                >
-                  {day}
+              <div className="cal-grid-day-number">
+                <span className={isToday ? 'cal-today-badge' : isOtherMonth ? 'cal-other-month-day' : 'cal-current-month-day'}>
+                  {cell.day}
                 </span>
-                {dayTasks.length > 0 && (
-                  <span
-                    className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5
-                                 ${hasOverdue ? 'bg-red-500/20 text-red-400' : 'bg-navy-700 text-slate-400'}`}
-                  >
-                    {dayTasks.length}
-                  </span>
-                )}
               </div>
 
-              {/* Task chips — show max 3, then "+N more" */}
-              {dayTasks.slice(0, 3).map((t) => (
-                <EventChip
-                  key={t.id}
-                  task={t}
-                  onClick={onSelect}
-                  isSelected={selected?.id === t.id}
-                />
-              ))}
-              {dayTasks.length > 3 && (
-                <button
-                  onClick={() => onSelect(dayTasks[3])}
-                  className="text-[10px] text-slate-500 hover:text-slate-300 text-left px-1 transition-colors"
-                >
-                  +{dayTasks.length - 3} more
-                </button>
-              )}
+              {/* Event chips */}
+              <div className="cal-grid-events">
+                {dayTasks.slice(0, 3).map((t) => (
+                  <EventChip
+                    key={t.id}
+                    task={t}
+                    onClick={onSelect}
+                    isSelected={selected?.id === t.id}
+                  />
+                ))}
+                {dayTasks.length > 3 && (
+                  <button
+                    onClick={() => onSelect(dayTasks[3])}
+                    className="cal-more-btn"
+                  >
+                    +{dayTasks.length - 3} more
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -467,54 +429,42 @@ function WeekView({
   selected: CalendarTask | null;
   onSelect: (t: CalendarTask) => void;
 }) {
-  const today = todayStr();
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + i);
-    return { date: d, dateStr: isoDate(d) };
+    return {
+      date: d,
+      dateStr: isoDate(d.getFullYear(), d.getMonth(), d.getDate()),
+    };
   });
 
   const tasksByDate: Record<string, CalendarTask[]> = {};
   for (const t of tasks) {
-    if (!tasksByDate[t.date]) tasksByDate[t.date] = [];
-    tasksByDate[t.date].push(t);
+    (tasksByDate[t.date] ??= []).push(t);
   }
 
   return (
-    <div className="grid grid-cols-7 rounded-xl border border-surface-border overflow-hidden">
+    <div className="cal-week-container">
       {days.map(({ date, dateStr }) => {
         const dayTasks = tasksByDate[dateStr] ?? [];
-        const isToday = dateStr === today;
-        const isPast = dateStr < today;
+        const isToday = dateStr === MOCK_TODAY;
         return (
           <div
             key={dateStr}
-            className={`
-              min-h-[200px] border-r border-surface-border/40 last:border-r-0 flex flex-col
-              ${isToday ? 'bg-brand-600/10' : isPast ? 'bg-navy-850/60' : 'bg-navy-800'}
-            `}
+            className={`cal-week-day ${isToday ? 'cal-week-day-today' : ''}`}
           >
-            {/* Header */}
-            <div className={`px-2 py-2 border-b border-surface-border/40 ${isToday ? 'bg-brand-600/20' : 'bg-navy-900'}`}>
-              <p className="text-[10px] font-semibold text-slate-500 uppercase">{WEEKDAYS[date.getDay()]}</p>
-              <p className={`text-lg font-bold leading-none mt-0.5 ${isToday ? 'text-brand-400' : isPast ? 'text-slate-600' : 'text-white'}`}>
+            <div className={`cal-week-day-header ${isToday ? 'cal-week-day-header-today' : ''}`}>
+              <span className="cal-week-dayname">{WEEKDAYS[date.getDay()]}</span>
+              <span className={`cal-week-daynum ${isToday ? 'cal-today-badge' : ''}`}>
                 {date.getDate()}
-              </p>
+              </span>
             </div>
-            {/* Tasks */}
-            <div className="p-1.5 flex flex-col gap-1 flex-1">
+            <div className="cal-week-events">
               {dayTasks.map((t) => (
-                <EventChip
-                  key={t.id}
-                  task={t}
-                  onClick={onSelect}
-                  isSelected={selected?.id === t.id}
-                />
+                <EventChip key={t.id} task={t} onClick={onSelect} isSelected={selected?.id === t.id} />
               ))}
               {dayTasks.length === 0 && (
-                <div className="flex-1 flex items-center justify-center">
-                  <span className="text-[10px] text-slate-700">—</span>
-                </div>
+                <div className="cal-week-empty">—</div>
               )}
             </div>
           </div>
@@ -536,97 +486,88 @@ function ListView({
   onSelect: (t: CalendarTask) => void;
   statuses: Record<string, CalTaskStatus>;
 }) {
-  const today = todayStr();
-  const sorted = [...tasks].sort((a, b) => a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time));
+  const sorted = [...tasks].sort(
+    (a, b) => a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time),
+  );
 
   if (sorted.length === 0) {
     return (
-      <div className="card py-20 text-center">
-        <ClipboardList size={36} className="text-slate-600 mx-auto mb-3" />
-        <p className="text-slate-400 font-medium">No tasks match the current filters</p>
-        <p className="text-slate-600 text-xs mt-1">Try adjusting filters to see more tasks</p>
+      <div className="cal-list-empty">
+        <ClipboardList size={32} style={{ color: '#94A3B8', marginBottom: 12 }} />
+        <p style={{ fontWeight: 500 }}>No tasks match the current filters</p>
+        <p style={{ color: '#94A3B8', fontSize: 12, marginTop: 4 }}>Adjust filters or clear them to see tasks</p>
       </div>
     );
   }
 
-  // Group by date
-  const byDate: Record<string, CalendarTask[]> = {};
-  for (const t of sorted) {
-    (byDate[t.date] ??= []).push(t);
-  }
-
   return (
-    <div className="space-y-4">
-      {Object.entries(byDate).map(([date, dateTasks]) => {
-        const isPast = date < today;
-        const isToday = date === today;
-        return (
-          <div key={date}>
-            {/* Date header */}
-            <div className="flex items-center gap-3 mb-2">
-              <div className={`
-                px-3 py-1.5 rounded-lg text-xs font-bold
-                ${isToday ? 'bg-brand-600 text-white' : isPast ? 'bg-navy-800 text-slate-500' : 'bg-navy-800 text-slate-300'}
-              `}>
-                {isToday ? 'Today' : date}
-              </div>
-              <div className="flex-1 h-px bg-surface-border/40" />
-            </div>
-
-            <div className="space-y-2">
-              {dateTasks.map((task) => {
-                const status = statuses[task.id] ?? task.status;
-                const isOverdue = task.date < today && status !== 'completed' && status !== 'deferred';
-                const c = priorityColors[task.priority];
-                return (
+    <div className="cal-list-container">
+      <table className="cal-list-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Time</th>
+            <th>Task</th>
+            <th>Asset</th>
+            <th>Asset Type</th>
+            <th>Zone</th>
+            <th>Criticality</th>
+            <th>Crew</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((task) => {
+            const c = riskEventStyle[task.risk_level];
+            const status = statuses[task.id] ?? task.status;
+            return (
+              <tr
+                key={task.id}
+                className={selected?.id === task.id ? 'cal-list-row-selected' : ''}
+                onClick={() => onSelect(task)}
+                style={{ cursor: 'pointer' }}
+              >
+                <td>{task.date}</td>
+                <td>{task.start_time} - {task.end_time}</td>
+                <td>
+                  <div style={{ fontWeight: 600 }}>{task.title}</div>
+                  <div style={{ fontSize: 11, color: '#64748B' }}>{task.id}</div>
+                </td>
+                <td style={{ fontFamily: 'Consolas, monospace', fontWeight: 600 }}>{task.asset_id}</td>
+                <td style={{ textTransform: 'capitalize' }}>{task.asset_type.replace('_', ' ')}</td>
+                <td>{task.zone}</td>
+                <td>
+                  <span className="cal-list-criticality" style={{ background: c.bg, color: c.text, borderColor: c.border }}>
+                    <span className="cal-list-criticality-dot" style={{ background: c.dot }} />
+                    {task.risk_level}
+                  </span>
+                </td>
+                <td>{task.assigned_team}</td>
+                <td>
+                  <span className={`cal-list-status cal-list-status-${status}`}>
+                    {statusLabels[status]}
+                  </span>
+                </td>
+                <td>
                   <button
-                    key={task.id}
-                    onClick={() => onSelect(task)}
-                    className={`
-                      w-full text-left card p-4 flex items-start gap-4 transition-all duration-150
-                      hover:bg-navy-750 focus-visible:ring-2 focus-visible:ring-brand-400
-                      ${selected?.id === task.id ? 'ring-2 ring-brand-400' : ''}
-                    `}
+                    className="cal-list-action-btn"
+                    onClick={(e) => { e.stopPropagation(); onSelect(task); }}
                   >
-                    {/* Priority stripe */}
-                    <div className={`w-1 self-stretch rounded-full shrink-0 ${c.dot}`} />
-
-                    {/* Main content */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2 flex-wrap mb-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-semibold text-white">{task.title}</span>
-                          <span className="font-mono text-xs text-slate-500">{task.asset_id}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <RiskBadge level={task.risk_level} size="sm" />
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
-                        <span className="capitalize">{task.asset_type.replace('_', ' ')}</span>
-                        <span>{task.zone} Zone</span>
-                        <span>{task.start_time}–{task.end_time}</span>
-                        <span>{task.assigned_team}</span>
-                        <span className={isOverdue ? 'text-red-400 font-semibold' : statusColors[status]}>
-                          {isOverdue ? '⚠ Overdue' : statusLabels[status]}
-                        </span>
-                      </div>
-                    </div>
-
-                    <ChevronRight size={15} className="text-slate-600 shrink-0 mt-1" />
+                    View
                   </button>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Toast notification (non-blocking replacement for alert())
+// Toast
 // ─────────────────────────────────────────────────────────────────────────────
 
 function Toast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
@@ -636,21 +577,11 @@ function Toast({ message, onDismiss }: { message: string; onDismiss: () => void 
   }, [onDismiss]);
 
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60]
-                 flex items-center gap-3 px-4 py-3 rounded-xl
-                 bg-navy-800 border border-amber-500/30 shadow-2xl text-sm"
-    >
-      <RotateCcw size={14} className="text-amber-400 shrink-0" />
-      <span className="text-slate-200">{message}</span>
-      <button
-        onClick={onDismiss}
-        className="p-0.5 text-slate-500 hover:text-white transition-colors ml-1"
-        aria-label="Dismiss notification"
-      >
-        <X size={13} />
+    <div role="status" aria-live="polite" className="cal-toast">
+      <RotateCcw size={13} />
+      <span>{message}</span>
+      <button onClick={onDismiss} aria-label="Dismiss" className="cal-toast-dismiss">
+        <X size={12} />
       </button>
     </div>
   );
@@ -661,44 +592,56 @@ function Toast({ message, onDismiss }: { message: string; onDismiss: () => void 
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function CalendarPage() {
-  // Stable today reference — captured once at mount
-  const todayRef = useRef(new Date());
-  const today = todayRef.current;
-
   const [viewMode, setViewMode] = useState<ViewMode>('month');
-  const [currentYear, setCurrentYear] = useState(today.getFullYear());
-  const [currentMonth, setCurrentMonth] = useState(today.getMonth());
+  const [currentYear, setCurrentYear] = useState(2026);
+  const [currentMonth, setCurrentMonth] = useState(8); // September = 8 (0-indexed)
   const [weekOffset, setWeekOffset] = useState(0);
   const [selectedTask, setSelectedTask] = useState<CalendarTask | null>(null);
   const [taskStatuses, setTaskStatuses] = useState<Record<string, CalTaskStatus>>({});
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Filters
-  const [filterRisk, setFilterRisk]     = useState<RiskLevel | 'all'>('all');
-  const [filterZone, setFilterZone]     = useState<Zone | 'all'>('all');
-  const [filterType, setFilterType]     = useState<AssetType | 'all'>('all');
-  const [filterCrew, setFilterCrew]     = useState<string>('all');
-  const [filterStatus, setFilterStatus] = useState<CalTaskStatus | 'all'>('all');
-  const [showFilters, setShowFilters]   = useState(false);
+  // ── Filter state ──
+  const [searchText, setSearchText]       = useState('');
+  const [filterRisk, setFilterRisk]       = useState<RiskLevel | 'all'>('all');
+  const [filterType, setFilterType]       = useState<AssetType | 'all'>('all');
+  const [filterZone, setFilterZone]       = useState<CalZone | 'all'>('all');
+  const [filterCrew, setFilterCrew]       = useState<CalCrew | 'all'>('all');
+  const [filterStatus, setFilterStatus]   = useState<CalTaskStatus | 'all'>('all');
+  // "staged" = inputs; "applied" = what actually filters
+  const [appliedSearch, setAppliedSearch]     = useState('');
+  const [appliedRisk, setAppliedRisk]         = useState<RiskLevel | 'all'>('all');
+  const [appliedType, setAppliedType]         = useState<AssetType | 'all'>('all');
+  const [appliedZone, setAppliedZone]         = useState<CalZone | 'all'>('all');
+  const [appliedCrew, setAppliedCrew]         = useState<CalCrew | 'all'>('all');
+  const [appliedStatus, setAppliedStatus]     = useState<CalTaskStatus | 'all'>('all');
 
-  // Derive effective statuses (local overrides)
-  function effectiveStatus(t: CalendarTask): CalTaskStatus {
-    if (taskStatuses[t.id]) return taskStatuses[t.id];
-    if (t.date < todayStr() && t.status === 'scheduled') return 'overdue';
-    return t.status;
+  function applyFilters() {
+    setAppliedSearch(searchText);
+    setAppliedRisk(filterRisk);
+    setAppliedType(filterType);
+    setAppliedZone(filterZone);
+    setAppliedCrew(filterCrew);
+    setAppliedStatus(filterStatus);
   }
 
-  // Actions
+  function clearFilters() {
+    setSearchText(''); setFilterRisk('all'); setFilterType('all');
+    setFilterZone('all'); setFilterCrew('all'); setFilterStatus('all');
+    setAppliedSearch(''); setAppliedRisk('all'); setAppliedType('all');
+    setAppliedZone('all'); setAppliedCrew('all'); setAppliedStatus('all');
+  }
+
   const handleMarkComplete = useCallback((id: string) => {
     setTaskStatuses((prev) => ({ ...prev, [id]: 'completed' }));
+    setToastMsg(`Task ${id} marked as completed.`);
   }, []);
 
   const handleReschedule = useCallback((id: string) => {
-    setTaskStatuses((prev) => ({ ...prev, [id]: 'deferred' }));
-    setToastMsg(`Task ${id} marked as deferred. A reschedule modal would appear in production.`);
+    setTaskStatuses((prev) => ({ ...prev, [id]: 'scheduled' }));
+    setToastMsg(`Task ${id} marked for rescheduling.`);
   }, []);
 
-  // Navigate months
+  // Month navigation
   const prevMonth = () => {
     if (currentMonth === 0) { setCurrentMonth(11); setCurrentYear((y) => y - 1); }
     else setCurrentMonth((m) => m - 1);
@@ -708,218 +651,235 @@ export function CalendarPage() {
     else setCurrentMonth((m) => m + 1);
   };
   const goToday = () => {
-    setCurrentYear(today.getFullYear());
-    setCurrentMonth(today.getMonth());
+    setCurrentYear(2026);
+    setCurrentMonth(8);
     setWeekOffset(0);
   };
 
-  // Week start — today is stable (useRef), so only weekOffset triggers recalc
   const weekStart = useMemo(() => {
-    const d = new Date(today);
+    const d = new Date(MOCK_TODAY_DATE);
     d.setDate(d.getDate() - d.getDay() + weekOffset * 7);
     return d;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekOffset]);
-
-  // All crews for filter
-  const allCrews = useMemo(
-    () => ['all', ...Array.from(new Set(calendarTasks.map((t) => t.assigned_team))).sort()],
-    [],
-  );
 
   // Filtered tasks
   const filteredTasks = useMemo(() => {
     return calendarTasks.filter((t) => {
-      const es = effectiveStatus(t);
-      if (filterRisk   !== 'all' && t.risk_level     !== filterRisk)   return false;
-      if (filterZone   !== 'all' && t.zone            !== filterZone)   return false;
-      if (filterType   !== 'all' && t.asset_type      !== filterType)   return false;
-      if (filterCrew   !== 'all' && t.assigned_team   !== filterCrew)   return false;
-      if (filterStatus !== 'all' && es                !== filterStatus) return false;
+      const status = taskStatuses[t.id] ?? t.status;
+      if (appliedSearch) {
+        const q = appliedSearch.toLowerCase();
+        if (
+          !t.id.toLowerCase().includes(q) &&
+          !t.asset_id.toLowerCase().includes(q) &&
+          !t.title.toLowerCase().includes(q) &&
+          !t.asset_type.toLowerCase().includes(q) &&
+          !t.zone.toLowerCase().includes(q) &&
+          !t.assigned_team.toLowerCase().includes(q)
+        ) return false;
+      }
+      if (appliedRisk   !== 'all' && t.risk_level    !== appliedRisk)   return false;
+      if (appliedType   !== 'all' && t.asset_type    !== appliedType)   return false;
+      if (appliedZone   !== 'all' && t.zone          !== appliedZone)   return false;
+      if (appliedCrew   !== 'all' && t.assigned_team !== appliedCrew)   return false;
+      if (appliedStatus !== 'all' && status          !== appliedStatus) return false;
       return true;
     });
-  }, [filterRisk, filterZone, filterType, filterCrew, filterStatus, taskStatuses]);
+  }, [appliedSearch, appliedRisk, appliedType, appliedZone, appliedCrew, appliedStatus, taskStatuses]);
 
-  // Summary KPIs
-  const kpis = useMemo(() => {
-    const todayStr_ = todayStr();
-    return {
-      total:     calendarTasks.length,
-      critical:  calendarTasks.filter((t) => t.risk_level === 'critical').length,
-      high:      calendarTasks.filter((t) => t.risk_level === 'high').length,
-      completed: calendarTasks.filter((t) => effectiveStatus(t) === 'completed').length,
-      dueToday:  calendarTasks.filter((t) => t.date === todayStr_).length,
-    };
-  }, [taskStatuses]);
+  // Legend counts
+  const legendCounts = useMemo(() => ({
+    critical: filteredTasks.filter((t) => t.risk_level === 'critical').length,
+    high:     filteredTasks.filter((t) => t.risk_level === 'high').length,
+    medium:   filteredTasks.filter((t) => t.risk_level === 'medium').length,
+    low:      filteredTasks.filter((t) => t.risk_level === 'low').length,
+  }), [filteredTasks]);
 
   return (
-    <div className="flex flex-col min-h-full">
-      {/* ── Main content ── */}
-      <div
-        className={`flex-1 p-6 transition-all duration-300 ${selectedTask ? 'lg:pr-[440px]' : ''}`}
-        style={{ maxWidth: selectedTask ? undefined : '1600px' }}
-      >
-        {/* Page header */}
-        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
+    <div className="cal-page">
+      {/* Main content */}
+      <div className="cal-content">
+
+        {/* ── Breadcrumb ── */}
+        <nav className="cal-breadcrumb" aria-label="Breadcrumb">
+          <span>Home</span>
+          <span className="cal-breadcrumb-sep">&gt;</span>
+          <span className="cal-breadcrumb-current">Calendar</span>
+        </nav>
+
+        {/* ── Page header ── */}
+        <div className="cal-page-header">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <CalendarIcon size={20} className="text-brand-400" />
-              <h1 className="page-title">Maintenance Calendar</h1>
+            <div className="cal-page-title-row">
+              <CalendarIcon size={22} className="cal-title-icon" />
+              <h1 className="cal-page-title">Maintenance Calendar</h1>
             </div>
-            <p className="page-subtitle">
-              Scheduled maintenance tasks and asset activities ·{' '}
-              <span className="text-slate-300">{today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
+            <p className="cal-page-subtitle">
+              Scheduled maintenance tasks and asset activities.
             </p>
           </div>
+        </div>
 
-          {/* View controls */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => setShowFilters((v) => !v)}
-              className={`btn-ghost flex items-center gap-1.5 text-xs ${showFilters ? 'bg-white/10 text-white' : ''}`}
-            >
-              <Filter size={13} />
-              Filters
-              {(filterRisk !== 'all' || filterZone !== 'all' || filterType !== 'all' || filterCrew !== 'all' || filterStatus !== 'all') && (
-                <span className="w-1.5 h-1.5 rounded-full bg-brand-400" />
-              )}
-            </button>
-            <div className="flex items-center bg-navy-900 border border-surface-border rounded-lg overflow-hidden">
-              {(['month', 'week', 'list'] as ViewMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setViewMode(m)}
-                  className={`px-3 py-2 text-xs font-medium transition-colors flex items-center gap-1.5 capitalize
-                              ${viewMode === m ? 'bg-brand-600 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
-                  aria-label={`${m} view`}
-                >
-                  {m === 'month' ? <LayoutGrid size={13} /> : m === 'week' ? <CalendarIcon size={13} /> : <List size={13} />}
-                  <span className="hidden sm:inline">{m}</span>
-                </button>
-              ))}
+        {/* ── Filter bar ── */}
+        <div className="cal-filter-bar">
+          <div className="cal-filter-fields">
+            {/* Search */}
+            <div className="cal-filter-field cal-filter-search">
+              <label className="cal-filter-label">Search</label>
+              <div className="cal-filter-input-wrap">
+                <Search size={14} className="cal-filter-search-icon" />
+                <input
+                  type="text"
+                  placeholder="Search tasks, assets..."
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
+                  className="cal-filter-input cal-filter-input-search"
+                  aria-label="Search tasks"
+                />
+              </div>
             </div>
-          </div>
-        </div>
 
-        {/* KPI summary cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
-          <StatCard title="Total Scheduled" value={kpis.total}     icon={CalendarIcon} accent="blue" />
-          <StatCard title="Critical Tasks"  value={kpis.critical}  icon={AlertTriangle} accent="red" />
-          <StatCard title="High Priority"   value={kpis.high}      icon={Wrench}        accent="orange" />
-          <StatCard title="Completed"       value={kpis.completed} icon={CheckCircle2}  accent="green" />
-          <StatCard title="Due Today"       value={kpis.dueToday}  icon={Clock}         accent="yellow" />
-        </div>
-
-        {/* Filter bar */}
-        {showFilters && (
-          <div className="card p-4 mb-4 flex flex-wrap gap-3 items-end">
-            {/* Risk */}
-            <div className="relative">
-              <label className="label-muted block mb-1">Risk Level</label>
-              <select value={filterRisk} onChange={(e) => setFilterRisk(e.target.value as RiskLevel | 'all')} className="select-dark pr-8">
-                <option value="all">All Levels</option>
+            {/* Criticality */}
+            <div className="cal-filter-field">
+              <label className="cal-filter-label">Criticality</label>
+              <select
+                value={filterRisk}
+                onChange={(e) => setFilterRisk(e.target.value as RiskLevel | 'all')}
+                className="cal-filter-select"
+                aria-label="Filter by criticality"
+              >
+                <option value="all">All</option>
                 <option value="critical">Critical</option>
                 <option value="high">High</option>
                 <option value="medium">Medium</option>
                 <option value="low">Low</option>
               </select>
-              <span className="pointer-events-none absolute right-2 bottom-2.5 text-slate-400 text-xs">▾</span>
+            </div>
+
+            {/* Asset Type */}
+            <div className="cal-filter-field">
+              <label className="cal-filter-label">Asset Type</label>
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value as AssetType | 'all')}
+                className="cal-filter-select"
+                aria-label="Filter by asset type"
+              >
+                <option value="all">All</option>
+                <option value="transformer">Transformer</option>
+                <option value="substation">Substation</option>
+                <option value="circuit_breaker">Circuit Breaker</option>
+                <option value="transmission_line">Transmission Line</option>
+                <option value="capacitor_bank">Capacitor Bank</option>
+              </select>
             </div>
 
             {/* Zone */}
-            <div className="relative">
-              <label className="label-muted block mb-1">Zone</label>
-              <select value={filterZone} onChange={(e) => setFilterZone(e.target.value as Zone | 'all')} className="select-dark pr-8">
-                <option value="all">All Zones</option>
-                {(['North', 'South', 'East', 'West', 'Central'] as Zone[]).map((z) => (
-                  <option key={z} value={z}>{z}</option>
-                ))}
+            <div className="cal-filter-field">
+              <label className="cal-filter-label">Zone</label>
+              <select
+                value={filterZone}
+                onChange={(e) => setFilterZone(e.target.value as CalZone | 'all')}
+                className="cal-filter-select"
+                aria-label="Filter by zone"
+              >
+                <option value="all">All</option>
+                <option value="Zone A">Zone A</option>
+                <option value="Zone B">Zone B</option>
+                <option value="Zone C">Zone C</option>
+                <option value="Zone D">Zone D</option>
               </select>
-              <span className="pointer-events-none absolute right-2 bottom-2.5 text-slate-400 text-xs">▾</span>
-            </div>
-
-            {/* Asset type */}
-            <div className="relative">
-              <label className="label-muted block mb-1">Asset Type</label>
-              <select value={filterType} onChange={(e) => setFilterType(e.target.value as AssetType | 'all')} className="select-dark pr-8">
-                <option value="all">All Types</option>
-                <option value="transformer">Transformer</option>
-                <option value="substation">Substation</option>
-                <option value="transmission_line">Transmission Line</option>
-                <option value="circuit_breaker">Circuit Breaker</option>
-                <option value="capacitor_bank">Capacitor Bank</option>
-              </select>
-              <span className="pointer-events-none absolute right-2 bottom-2.5 text-slate-400 text-xs">▾</span>
             </div>
 
             {/* Crew */}
-            <div className="relative">
-              <label className="label-muted block mb-1">Crew</label>
-              <select value={filterCrew} onChange={(e) => setFilterCrew(e.target.value)} className="select-dark pr-8" style={{ maxWidth: 220 }}>
-                {allCrews.map((c) => (
-                  <option key={c} value={c}>{c === 'all' ? 'All Crews' : c}</option>
-                ))}
+            <div className="cal-filter-field">
+              <label className="cal-filter-label">Crew</label>
+              <select
+                value={filterCrew}
+                onChange={(e) => setFilterCrew(e.target.value as CalCrew | 'all')}
+                className="cal-filter-select"
+                aria-label="Filter by crew"
+              >
+                <option value="all">All</option>
+                <option value="Crew Alpha">Crew Alpha</option>
+                <option value="Crew Beta">Crew Beta</option>
+                <option value="Crew Gamma">Crew Gamma</option>
+                <option value="Crew Delta">Crew Delta</option>
               </select>
-              <span className="pointer-events-none absolute right-2 bottom-2.5 text-slate-400 text-xs">▾</span>
             </div>
 
             {/* Status */}
-            <div className="relative">
-              <label className="label-muted block mb-1">Status</label>
-              <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as CalTaskStatus | 'all')} className="select-dark pr-8">
-                <option value="all">All Statuses</option>
+            <div className="cal-filter-field">
+              <label className="cal-filter-label">Status</label>
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as CalTaskStatus | 'all')}
+                className="cal-filter-select"
+                aria-label="Filter by status"
+              >
+                <option value="all">All</option>
                 <option value="scheduled">Scheduled</option>
                 <option value="in_progress">In Progress</option>
                 <option value="completed">Completed</option>
-                <option value="deferred">Deferred</option>
                 <option value="overdue">Overdue</option>
               </select>
-              <span className="pointer-events-none absolute right-2 bottom-2.5 text-slate-400 text-xs">▾</span>
             </div>
 
+            {/* Buttons */}
+            <div className="cal-filter-buttons">
+              <button onClick={applyFilters} className="cal-btn-apply">
+                Apply Filters
+              </button>
+              <button onClick={clearFilters} className="cal-btn-clear">
+                Clear
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Month navigation row ── */}
+        <div className="cal-nav-row">
+          <div className="cal-nav-left">
+            <button onClick={goToday} className="cal-nav-btn">Today</button>
             <button
-              onClick={() => {
-                setFilterRisk('all'); setFilterZone('all'); setFilterType('all');
-                setFilterCrew('all'); setFilterStatus('all');
-              }}
-              className="btn-ghost flex items-center gap-1 text-xs self-end"
+              onClick={viewMode === 'month' ? prevMonth : () => setWeekOffset((w) => w - 1)}
+              className="cal-nav-btn cal-nav-arrow"
+              aria-label="Previous"
             >
-              <RotateCcw size={11} /> Reset
+              <ChevronLeft size={16} />
             </button>
-
-            <span className="text-xs text-slate-500 self-end ml-auto">
-              {filteredTasks.length} task{filteredTasks.length !== 1 ? 's' : ''}
-            </span>
+            <button
+              onClick={viewMode === 'month' ? nextMonth : () => setWeekOffset((w) => w + 1)}
+              className="cal-nav-btn cal-nav-arrow"
+              aria-label="Next"
+            >
+              <ChevronRight size={16} />
+            </button>
+            <h2 className="cal-month-title">
+              {viewMode === 'month'
+                ? `${MONTHS[currentMonth]} ${currentYear}`
+                : viewMode === 'week'
+                  ? `Week of ${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+                  : `${MONTHS[currentMonth]} ${currentYear}`
+              }
+            </h2>
           </div>
-        )}
-
-        {/* ── Calendar nav bar ── */}
-        {viewMode !== 'list' && (
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={viewMode === 'month' ? prevMonth : () => setWeekOffset((w) => w - 1)}
-                className="btn-ghost p-2" aria-label="Previous"
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <h2 className="text-base font-bold text-white min-w-[200px] text-center">
-                {viewMode === 'month'
-                  ? `${MONTHS[currentMonth]} ${currentYear}`
-                  : `Week of ${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`}
-              </h2>
-              <button
-                onClick={viewMode === 'month' ? nextMonth : () => setWeekOffset((w) => w + 1)}
-                className="btn-ghost p-2" aria-label="Next"
-              >
-                <ChevronRight size={16} />
-              </button>
+          <div className="cal-nav-right">
+            {/* View mode toggle */}
+            <div className="cal-view-toggle">
+              {(['month', 'week', 'list'] as ViewMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setViewMode(m)}
+                  className={`cal-view-btn ${viewMode === m ? 'cal-view-btn-active' : ''}`}
+                  aria-label={`${m} view`}
+                >
+                  {m === 'month' ? 'Month' : m === 'week' ? 'Week' : 'List'}
+                </button>
+              ))}
             </div>
-            <button onClick={goToday} className="btn-ghost text-xs px-3 py-1.5">
-              Today
-            </button>
           </div>
-        )}
+        </div>
 
         {/* ── Views ── */}
         {viewMode === 'month' && (
@@ -947,6 +907,19 @@ export function CalendarPage() {
             statuses={taskStatuses}
           />
         )}
+
+        {/* ── Legend ── */}
+        <div className="cal-legend">
+          <span className="cal-legend-total">
+            Total: {filteredTasks.length} tasks
+          </span>
+          {legendDots.map(({ level, label, color }) => (
+            <span key={level} className="cal-legend-item">
+              <span className="cal-legend-dot" style={{ background: color }} />
+              {label} ({legendCounts[level]})
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* ── Detail Drawer ── */}
@@ -958,7 +931,7 @@ export function CalendarPage() {
         statuses={taskStatuses}
       />
 
-      {/* ── Toast notification ── */}
+      {/* ── Toast ── */}
       {toastMsg && (
         <Toast message={toastMsg} onDismiss={() => setToastMsg(null)} />
       )}

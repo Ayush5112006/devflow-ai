@@ -39,11 +39,11 @@ export function Dashboard() {
   const totalCustomers = assets.reduce((s, a) => s + a.customers_served, 0);
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px]">
+    <div className="dash-page p-6 space-y-6 max-w-[1400px]">
       {/* Page header */}
       <div className="page-header">
         <div className="flex items-center gap-2 mb-1">
-          <Zap size={18} className="text-brand-400" />
+          <Zap size={18} className="dash-icon-accent" />
           <h1 className="page-title">Grid Health Dashboard</h1>
         </div>
         <p className="page-subtitle">
@@ -85,16 +85,15 @@ export function Dashboard() {
 
       {/* Outage risk banner */}
       {summary.outage_risk_24h >= 0.25 && (
-        <div className="flex items-start gap-3 p-4 bg-amber-500/10 border border-amber-500/25
-                        rounded-xl text-sm text-amber-300">
-          <AlertTriangle size={18} className="shrink-0 mt-0.5 text-amber-400" />
+        <div className="dash-alert-banner">
+          <AlertTriangle size={18} className="shrink-0 mt-0.5 dash-alert-icon" />
           <div>
-            <p className="font-semibold text-amber-300">
+            <p className="dash-alert-title">
               Elevated outage risk:{' '}
-              <span className="text-amber-400">{Math.round(summary.outage_risk_24h * 100)}%</span>
+              <span className="dash-alert-pct">{Math.round(summary.outage_risk_24h * 100)}%</span>
               {' '}probability in next 24 hours
             </p>
-            <p className="text-amber-400/70 text-xs mt-0.5">
+            <p className="dash-alert-subtitle">
               Based on current asset health and weather exposure. Review critical assets immediately.
             </p>
           </div>
@@ -106,10 +105,10 @@ export function Dashboard() {
         {/* Map */}
         <div className="xl:col-span-2 card p-0 overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-surface-border">
-            <h2 className="text-sm font-semibold text-white">Grid Map Preview</h2>
+            <h2 className="dash-card-heading">Grid Map Preview</h2>
             <Link
               to="/map"
-              className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1 transition-colors"
+              className="dash-card-link"
             >
               View Full Map <ChevronRight size={13} />
             </Link>
@@ -121,15 +120,15 @@ export function Dashboard() {
         <div className="flex flex-col gap-4">
           <div className="card p-5">
             <div className="flex items-center gap-2 mb-3">
-              <Users size={15} className="text-brand-400" />
-              <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
+              <Users size={15} className="dash-icon-accent" />
+              <h3 className="dash-section-label">
                 Customer Exposure
               </h3>
             </div>
-            <p className="text-3xl font-bold text-white font-mono">
+            <p className="dash-big-number">
               {totalCustomers.toLocaleString()}
             </p>
-            <p className="text-xs text-slate-400 mt-1">total customers monitored</p>
+            <p className="dash-muted-text mt-1">total customers monitored</p>
             <div className="divider my-3" />
             <div className="grid grid-cols-2 gap-3 text-xs">
               {(['critical', 'high', 'medium', 'low'] as const).map((level) => {
@@ -138,10 +137,10 @@ export function Dashboard() {
                 return (
                   <div key={level} className="flex flex-col">
                     <RiskBadge level={level} size="sm" />
-                    <p className="font-mono font-bold text-white mt-1">
+                    <p className="font-mono font-bold dash-text-primary mt-1">
                       {customers.toLocaleString()}
                     </p>
-                    <p className="text-slate-500">customers</p>
+                    <p className="dash-muted-text">customers</p>
                   </div>
                 );
               })}
@@ -155,17 +154,17 @@ export function Dashboard() {
               const count = assets.filter((a) => a.risk_level === level).length;
               const pct = Math.round((count / assets.length) * 100);
               const barColors: Record<string, string> = {
-                critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e',
+                critical: '#DC2626', high: '#F97316', medium: '#EAB308', low: '#16A34A',
               };
               return (
                 <div key={level} className="mb-2.5">
                   <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-slate-400 capitalize">{level}</span>
-                    <span className="text-slate-300 font-medium">{count} assets</span>
+                    <span className="dash-muted-text capitalize">{level}</span>
+                    <span className="dash-secondary-text font-medium">{count} assets</span>
                   </div>
-                  <div className="h-1.5 rounded-full bg-navy-900 overflow-hidden">
+                  <div className="dash-progress-track">
                     <div
-                      className="h-1.5 rounded-full"
+                      className="dash-progress-bar"
                       style={{ width: `${pct}%`, background: barColors[level] }}
                     />
                   </div>
@@ -181,10 +180,10 @@ export function Dashboard() {
         {/* Top 5 at-risk */}
         <div className="card">
           <div className="flex items-center justify-between px-5 py-4 border-b border-surface-border">
-            <h2 className="text-sm font-semibold text-white">Top 5 At-Risk Assets</h2>
+            <h2 className="dash-card-heading">Top 5 At-Risk Assets</h2>
             <Link
               to="/assets"
-              className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1 transition-colors"
+              className="dash-card-link"
             >
               View All <ChevronRight size={13} />
             </Link>
@@ -194,24 +193,23 @@ export function Dashboard() {
               <Link
                 key={asset.id}
                 to={`/assets/${asset.id}`}
-                className="flex items-center gap-4 px-5 py-3.5 hover:bg-navy-750 transition-colors group"
+                className="dash-table-row group"
               >
-                <span className="text-slate-600 font-mono text-sm w-5 shrink-0">
+                <span className="dash-row-index">
                   {String(i + 1).padStart(2, '0')}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-white group-hover:text-brand-300
-                                 transition-colors truncate">
+                  <p className="dash-row-title group-hover:text-brand-300 transition-colors truncate">
                     {asset.id}
                   </p>
-                  <p className="text-xs text-slate-400 capitalize">
+                  <p className="dash-muted-text capitalize text-xs">
                     {asset.type.replace('_', ' ')} · {asset.zone}
                   </p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <StatusBadge status={asset.status} size="sm" />
                   <RiskBadge level={asset.risk_level} />
-                  <span className="text-sm font-bold font-mono text-white w-8 text-right">
+                  <span className="dash-row-score">
                     {asset.risk_score}
                   </span>
                 </div>
@@ -223,40 +221,44 @@ export function Dashboard() {
         {/* Upcoming maintenance */}
         <div className="card">
           <div className="flex items-center justify-between px-5 py-4 border-b border-surface-border">
-            <h2 className="text-sm font-semibold text-white">Upcoming Maintenance</h2>
+            <h2 className="dash-card-heading">Upcoming Maintenance</h2>
             <Link
               to="/maintenance"
-              className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1 transition-colors"
+              className="dash-card-link"
             >
               View Full Plan <ChevronRight size={13} />
             </Link>
           </div>
           <div className="divide-y divide-surface-border/50">
             {upcomingTasks.map((task) => {
-              const priorityColors: Record<string, string> = {
-                emergency: 'text-red-400 bg-red-500/10 border-red-500/25',
-                urgent: 'text-orange-400 bg-orange-500/10 border-orange-500/25',
-                routine: 'text-blue-400 bg-blue-500/10 border-blue-500/25',
+              const priorityStyles: Record<string, { bg: string; border: string; color: string }> = {
+                emergency: { bg: '#FEE2E2', border: '#FCA5A5', color: '#991B1B' },
+                urgent:    { bg: '#FFEDD5', border: '#FDBA74', color: '#9A3412' },
+                routine:   { bg: '#DBEAFE', border: '#93C5FD', color: '#1E40AF' },
               };
+              const ps = priorityStyles[task.priority] ?? priorityStyles.routine;
               return (
                 <Link
                   key={task.id}
                   to={`/assets/${task.asset_id}`}
-                  className="flex items-start gap-4 px-5 py-3.5 hover:bg-navy-750 transition-colors group"
+                  className="dash-table-row group"
                 >
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-white group-hover:text-brand-300
-                                   transition-colors truncate">
+                    <p className="dash-row-title group-hover:text-brand-300 transition-colors truncate">
                       {task.asset_id}
                     </p>
-                    <p className="text-xs text-slate-400 truncate mt-0.5">{task.action}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">
+                    <p className="dash-muted-text text-xs truncate mt-0.5">{task.action}</p>
+                    <p className="dash-dimmed-text text-xs mt-0.5">
                       {task.scheduled_date} · {task.assigned_team}
                     </p>
                   </div>
                   <span
-                    className={`text-xs font-semibold px-2 py-0.5 rounded-full border capitalize shrink-0
-                                ${priorityColors[task.priority]}`}
+                    className="dash-priority-badge"
+                    style={{
+                      background: ps.bg,
+                      borderColor: ps.border,
+                      color: ps.color,
+                    }}
                   >
                     {task.priority}
                   </span>
