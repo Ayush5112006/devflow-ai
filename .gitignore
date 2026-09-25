@@ -28,6 +28,9 @@ pnpm-debug.log*
 *.sqlite3
 *.db
 
+# Disposable per-run worktrees (git clones / copies of demo projects)
+workspaces/
+
 # Editor and OS files
 .DS_Store
 Thumbs.db

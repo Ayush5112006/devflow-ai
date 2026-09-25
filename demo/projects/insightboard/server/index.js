@@ -39,7 +39,9 @@ export const server = http.createServer((req, res) => {
     if (!hit) continue;
     try {
       hit.handler({ params: hit.params, query: Object.fromEntries(url.searchParams) }, {
-        json: sendJson,
+        // Handlers call `res.json(status, body)`, so bind `res` here rather
+        // than passing sendJson through raw.
+        json: (status, body) => sendJson(res, status, body),
         status: (code) => ({ json: (c, b) => sendJson(res, c, b) }),
       });
     } catch (err) {

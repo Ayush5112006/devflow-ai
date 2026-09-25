@@ -8,11 +8,10 @@ import { LoadingSpinner } from '../components/LoadingSpinner.js';
 import { PipelineDiagram } from '../components/PipelineDiagram.js';
 import { ActivityLog } from '../components/ActivityLog.js';
 import { StageStepper, STAGE_ORDER, STAGE_LABEL, stageTone } from '../components/StageStepper.js';
-import type { ActivityEntry, Investigation, StageId } from '../types/index.js';
+import type { ActivityEntry, AgentRun, Evidence, Finding, Hypothesis, Investigation, StageId } from '../types/index.js';
 
 /**
- * Human-readable elapsed time. Sub-minute runs used to round to a literal
- * "0 min", which made a fast (and successful) run look like it saved nothing.
+ * Human-readable elapsed time.
  */
 function duration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—';
@@ -56,6 +55,15 @@ function tabAvailable(id: string, inv: Investigation): boolean {
     default: return true;
   }
 }
+
+const AGENT_META: Record<string, { label: string; role: string; icon: string }> = {
+  evidence: { label: 'Evidence Agent', role: 'Parses logs, stack traces, and HTTP evidence', icon: '🔍' },
+  code: { label: 'Code Investigator', role: 'Traces symbols, call paths, and property chains', icon: '⚙️' },
+  api: { label: 'API/Service Investigator', role: 'Audits routes, contracts, and response shapes', icon: '🌐' },
+  database: { label: 'Database Investigator', role: 'Inspects queries, schema, and SQL errors', icon: '🗄️' },
+  test: { label: 'Test Investigator', role: 'Scans test coverage and known failures', icon: '🧪' },
+  history: { label: 'Git History Investigator', role: 'Reviews recent commits and regressions', icon: '📜' },
+};
 
 export function InvestigationPage() {
   const { id } = useParams<{ id: string }>();
@@ -140,16 +148,16 @@ export function InvestigationPage() {
       {awaitingApproval && (
         <div className="banner banner-warn">
           <div>
-            <p className="banner-title" style={{ color: 'var(--warn)' }}>⏸ This step needs you</p>
+            <p className="banner-title" style={{ color: 'var(--warn)' }}>⏸ Human approval required</p>
             <p className="banner-text">
               Nothing has been written yet. Review the change plan — it contains{' '}
-              <strong>{inv.changePlan?.changes.length ?? 0}</strong> change
-              {inv.changePlan?.changes.length === 1 ? '' : 's'} — then approve to let the
-              implementation agent apply exactly that plan.
+              <strong>{inv.changePlan?.changes.length ?? 0}</strong> proposed change
+              {inv.changePlan?.changes.length === 1 ? '' : 's'} — then approve to authorise
+              the implementation agent to apply exactly that plan.
             </p>
           </div>
           <div className="row" style={{ gap: 8 }}>
-            <button className="btn btn-sm" onClick={() => setActiveTab('changeplan')}>Review plan</button>
+            <button className="btn btn-sm" onClick={() => setActiveTab('changeplan')}>Review change plan</button>
             <button className="btn btn-warn btn-sm" onClick={() => approve('')} disabled={approving}>
               {approving ? 'Approving…' : '✓ Approve fix plan'}
             </button>
@@ -157,17 +165,14 @@ export function InvestigationPage() {
         </div>
       )}
 
-      {/*
-        approve() transitions straight to `implementing`, so `approved` is never
-        observed even though it exists in the status union. Gating only on
-        `approved` made the control unreachable and dead-ended the workflow.
-      */}
       {awaitingApply && (
         <div className="banner banner-info">
           <div>
             <p className="banner-title" style={{ color: 'var(--info)' }}>✓ Plan approved</p>
             <p className="banner-text">
-              The decision is recorded against plan hash{' '}
+              Approved by <strong>{inv.approval?.approvedBy}</strong> at{' '}
+              {inv.approval?.approvedAt ? new Date(inv.approval.approvedAt).toLocaleString() : '—'}.{' '}
+              Bound to plan hash{' '}
               <span className="mono">{inv.changePlan?.planHash.slice(0, 12)}</span>. Applying writes
               only the approved edits to the isolated workspace.
             </p>
@@ -181,7 +186,7 @@ export function InvestigationPage() {
       {inv.status === 'completed' && (
         <div className="banner banner-ok">
           <div>
-            <p className="banner-title" style={{ color: 'var(--accent)' }}>✓ Investigation finished</p>
+            <p className="banner-title" style={{ color: 'var(--accent)' }}>✓ Investigation complete</p>
             <p className="banner-text">
               Implementation applied {inv.implementation?.appliedChanges.length ?? 0} of{' '}
               {inv.changePlan?.changes.length ?? 0} planned change
@@ -227,7 +232,9 @@ export function InvestigationPage() {
               >
                 <span className={`tab-dot ${dotClass}`} aria-hidden="true" />
                 {t.label}
-                {t.id === 'findings' && <span className="tab-count">{inv.findings.length}</span>}
+                {t.id === 'findings' && inv.findings.filter(f => f.severity !== 'info').length > 0 && (
+                  <span className="tab-count">{inv.findings.filter(f => f.severity !== 'info').length}</span>
+                )}
               </button>
             );
           })}
@@ -237,7 +244,9 @@ export function InvestigationPage() {
           {activeTab === 'pipeline' && <PipelineTab inv={inv} activity={activity} />}
           {activeTab === 'findings' && <FindingsTab inv={inv} />}
           {activeTab === 'rootcause' && <RootCauseTab inv={inv} />}
-          {activeTab === 'changeplan' && <ChangePlanTab inv={inv} onApprove={approve} approving={approving} />}
+          {activeTab === 'changeplan' && (
+            <ChangePlanTab inv={inv} onApprove={approve} approving={approving} />
+          )}
           {activeTab === 'implementation' && <ImplementationTab inv={inv} />}
           {activeTab === 'verification' && <VerificationTab inv={inv} />}
           {activeTab === 'regression' && <RegressionTab inv={inv} />}
@@ -249,7 +258,7 @@ export function InvestigationPage() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Tab panels                                                         */
+/* Shared helpers                                                      */
 /* ------------------------------------------------------------------ */
 
 function Pending({ what, hint }: { what: string; hint: string }) {
@@ -261,13 +270,171 @@ function Pending({ what, hint }: { what: string; hint: string }) {
   );
 }
 
+function ConfidenceMeter({ value, label }: { value: number; label?: string }) {
+  const pct = Math.round(value * 100);
+  const color = pct >= 80 ? 'var(--accent)' : pct >= 60 ? 'var(--info)' : 'var(--warn)';
+  return (
+    <div className="row" style={{ gap: 8 }}>
+      <div className="meter" style={{ flex: 1 }} role="img" aria-label={`${label ?? 'Confidence'} ${pct}%`}>
+        <div className="meter-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="mono" style={{ fontSize: 12, fontWeight: 700, color, minWidth: 36, textAlign: 'right' }}>
+        {pct}%
+      </span>
+      {label && <span className="subtle" style={{ fontSize: 11 }}>{label}</span>}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Pipeline Tab                                                        */
+/* ------------------------------------------------------------------ */
+
+function AgentCard({ agent }: { agent: AgentRun }) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = AGENT_META[agent.agent] ?? { label: agent.title, role: '', icon: '🤖' };
+  const statusColor =
+    agent.status === 'completed' ? 'var(--accent)' :
+    agent.status === 'failed' ? 'var(--danger)' :
+    agent.status === 'running' ? 'var(--info)' :
+    'var(--subtle)';
+
+  return (
+    <article className="panel" style={{ borderColor: agent.status === 'failed' ? 'rgba(248,113,113,.3)' : undefined }}>
+      <button
+        className="panel-head"
+        style={{ width: '100%', background: 'none', border: 0, cursor: 'pointer', textAlign: 'left' }}
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
+        <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
+          <span style={{ fontSize: 16, flex: 'none' }} aria-hidden="true">{meta.icon}</span>
+          <div style={{ minWidth: 0 }}>
+            <div className="row" style={{ gap: 8 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--ink)' }}>{meta.label}</span>
+              <span
+                className="mono"
+                style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.07em', color: statusColor }}
+              >
+                {agent.status}
+              </span>
+            </div>
+            <p className="subtle" style={{ margin: 0, fontSize: 11.5, lineHeight: 1.4, marginTop: 2 }}>
+              {meta.role}
+            </p>
+          </div>
+        </div>
+        <div className="row" style={{ gap: 8, flex: 'none' }}>
+          {agent.durationMs != null && agent.durationMs > 0 && (
+            <span className="chip mono">{duration(agent.durationMs)}</span>
+          )}
+          {agent.status === 'completed' && (
+            <span className="chip" style={{ color: 'var(--accent)' }}>
+              {agent.findingCount} finding{agent.findingCount === 1 ? '' : 's'}
+            </span>
+          )}
+          {agent.status === 'completed' && agent.signalCount > 0 && (
+            <span className="chip" style={{ color: 'var(--info)' }}>
+              {agent.signalCount} signal{agent.signalCount === 1 ? '' : 's'}
+            </span>
+          )}
+          <span className="subtle" style={{ fontSize: 11 }} aria-hidden="true">{expanded ? '▲' : '▼'}</span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="panel-body stack-sm" style={{ borderTop: '1px solid var(--line)' }}>
+          {agent.status === 'failed' && agent.error && (
+            <div className="alert">
+              <div>
+                <p style={{ margin: 0, fontWeight: 600, fontSize: 12.5 }}>Agent failed</p>
+                <p className="mono" style={{ margin: '4px 0 0', fontSize: 12 }}>{agent.error.message}</p>
+                {agent.error.detail && (
+                  <p className="subtle" style={{ margin: '4px 0 0', fontSize: 11.5 }}>{agent.error.detail}</p>
+                )}
+              </div>
+            </div>
+          )}
+          {agent.notes && agent.notes.length > 0 && (
+            <div>
+              <p className="panel-title" style={{ marginBottom: 6 }}>Activity</p>
+              <ul className="list-plain" style={{ gap: 4 }}>
+                {agent.notes.map((n, i) => (
+                  <li key={i} className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>· {n}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {agent.status === 'completed' && agent.findingCount === 0 && agent.signalCount === 0 && (
+            <p className="subtle" style={{ fontSize: 12 }}>No actionable findings from this agent — scope of this bug is elsewhere.</p>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
 function PipelineTab({ inv, activity }: { inv: Investigation; activity: ActivityEntry[] }) {
+  const investigationAgents = inv.agents.filter((a) =>
+    ['evidence', 'code', 'api', 'database', 'test', 'history'].includes(a.agent),
+  );
+
+  // Show manager agent as a separate concept
+  const hasAgents = investigationAgents.length > 0;
+  const completedAgents = investigationAgents.filter((a) => a.status === 'completed').length;
+  const failedAgents = investigationAgents.filter((a) => a.status === 'failed').length;
+  const runningAgents = investigationAgents.filter((a) => a.status === 'running').length;
+
   return (
     <div className="card-grid-sidebar">
       <div className="stack">
-        <Card title="Agent activity">
-          <ActivityLog entries={activity} />
-        </Card>
+        {/* Manager Agent summary */}
+        <div className="panel">
+          <div className="panel-head">
+            <h3 className="panel-title">Manager Agent</h3>
+            <Badge variant="info" dot>Orchestrator</Badge>
+          </div>
+          <div className="panel-body stack-sm">
+            <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>
+              Coordinates parallel investigation agents, merges findings, runs root cause correlation,
+              generates the change plan, and enforces the human approval gate.
+            </p>
+            {hasAgents && (
+              <div className="row" style={{ gap: 10 }}>
+                <span className="chip" style={{ color: 'var(--accent)' }}>{completedAgents} completed</span>
+                {runningAgents > 0 && <span className="chip" style={{ color: 'var(--info)' }}>{runningAgents} running</span>}
+                {failedAgents > 0 && <span className="chip" style={{ color: 'var(--danger)' }}>{failedAgents} failed</span>}
+                <span className="chip">{investigationAgents.length} total agents</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Parallel investigation agents */}
+        {hasAgents ? (
+          <div className="stack">
+            <div className="section-heading" style={{ marginBottom: 0 }}>
+              <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--muted)' }}>
+                Parallel investigation agents
+              </h3>
+              <span className="subtle" style={{ fontSize: 11 }}>click to expand details</span>
+            </div>
+            {investigationAgents.map((agent) => (
+              <AgentCard key={agent.agent} agent={agent} />
+            ))}
+          </div>
+        ) : (
+          inv.status === 'investigating' || inv.status === 'draft' ? (
+            <div className="panel">
+              <div className="panel-body">
+                <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                  Parallel agents will appear here as they launch…
+                </p>
+              </div>
+            </div>
+          ) : null
+        )}
+
         {inv.errors.length > 0 && (
           <div className="panel">
             <div className="panel-head">
@@ -299,8 +466,116 @@ function PipelineTab({ inv, activity }: { inv: Investigation; activity: Activity
             </dl>
           </Card>
         )}
+        <Card title="Agent activity">
+          <ActivityLog entries={activity} />
+        </Card>
       </div>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Findings Tab                                                        */
+/* ------------------------------------------------------------------ */
+
+function EvidenceBlock({ items, max = 4 }: { items: Evidence[]; max?: number }) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? items : items.slice(0, max);
+  if (items.length === 0) return null;
+  return (
+    <div className="stack-sm">
+      <span className="panel-title">Evidence</span>
+      {visible.map((ev) => (
+        <div key={ev.id} style={{ paddingLeft: 12, borderLeft: '2px solid var(--line)' }}>
+          <div className="row" style={{ gap: 8 }}>
+            {ev.location?.file && <span className="chip mono">{ev.location.file}{ev.location.line ? `:${ev.location.line}` : ''}</span>}
+            <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>{ev.kind}</span>
+          </div>
+          <p className="muted" style={{ margin: '4px 0 0', fontSize: 12.5, lineHeight: 1.55 }}>{ev.description}</p>
+          {ev.snippet && (
+            <pre className="code" style={{ marginTop: 6, fontSize: 11 }}>{ev.snippet}</pre>
+          )}
+        </div>
+      ))}
+      {items.length > max && !showAll && (
+        <button className="btn btn-link btn-sm" onClick={() => setShowAll(true)} style={{ alignSelf: 'flex-start' }}>
+          + {items.length - max} more evidence items
+        </button>
+      )}
+    </div>
+  );
+}
+
+function FindingCard({ finding }: { finding: Finding }) {
+  const [expanded, setExpanded] = useState(false);
+  const agentMeta = AGENT_META[finding.agent] ?? { label: finding.agent, icon: '🤖' };
+
+  return (
+    <article className="panel">
+      <button
+        className="panel-head"
+        style={{ width: '100%', background: 'none', border: 0, cursor: 'pointer', textAlign: 'left' }}
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 12 }} aria-hidden="true">{agentMeta.icon}</span>
+            <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.07em' }}>{agentMeta.label}</span>
+          </div>
+          <h3 className="page-title-sm" style={{ fontSize: 14 }}>{finding.title}</h3>
+        </div>
+        <div className="row" style={{ gap: 6, flex: 'none' }}>
+          <Badge variant={finding.severity === 'high' ? 'danger' : finding.severity === 'medium' ? 'warn' : 'info'} dot>
+            {finding.severity}
+          </Badge>
+          <Badge variant="muted">{Math.round(finding.confidence * 100)}%</Badge>
+          <span className="subtle" style={{ fontSize: 11 }} aria-hidden="true">{expanded ? '▲' : '▼'}</span>
+        </div>
+      </button>
+
+      <div className="panel-body stack-sm">
+        <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{finding.summary}</p>
+        {finding.impact && (
+          <p className="subtle" style={{ margin: 0, fontSize: 12, fontStyle: 'italic' }}>Impact: {finding.impact}</p>
+        )}
+        {finding.files.length > 0 && (
+          <div className="row" style={{ gap: 6 }}>
+            {finding.files.slice(0, 6).map((file) => (
+              <span key={file} className="chip">{file}</span>
+            ))}
+            {finding.files.length > 6 && <span className="chip">+{finding.files.length - 6}</span>}
+          </div>
+        )}
+      </div>
+
+      {expanded && (
+        <div className="panel-body stack" style={{ borderTop: '1px solid var(--line)', paddingTop: 14 }}>
+          {finding.functions.length > 0 && (
+            <div>
+              <p className="panel-title" style={{ marginBottom: 6 }}>Functions / Components</p>
+              <div className="row" style={{ gap: 6 }}>
+                {finding.functions.slice(0, 10).map((fn) => (
+                  <span key={fn} className="chip mono">{fn}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          <EvidenceBlock items={finding.evidence} />
+          <div className="spread" style={{ paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+            <div>
+              <span className="subtle" style={{ fontSize: 11 }}>Confidence</span>
+              <div style={{ width: 180, marginTop: 4 }}>
+                <ConfidenceMeter value={finding.confidence} />
+              </div>
+            </div>
+            {finding.durationMs > 0 && (
+              <span className="chip mono">{duration(finding.durationMs)}</span>
+            )}
+          </div>
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -309,32 +584,141 @@ function FindingsTab({ inv }: { inv: Investigation }) {
   if (findings.length === 0) {
     return <Pending what="Findings" hint="The analysis agents have not reported anything actionable yet." />;
   }
+
+  // Group by agent for clarity
+  const byAgent = new Map<string, Finding[]>();
+  for (const f of findings) {
+    const group = byAgent.get(f.agent) ?? [];
+    group.push(f);
+    byAgent.set(f.agent, group);
+  }
+
+  // Agent order: root cause last, code/api/database first
+  const agentOrder = ['evidence', 'code', 'api', 'database', 'test', 'history', 'rootCause'];
+  const sortedAgents = [...byAgent.keys()].sort(
+    (a, b) => agentOrder.indexOf(a) - agentOrder.indexOf(b),
+  );
+
   return (
     <div className="stack">
-      {findings.map((f) => (
-        <article key={f.id} className="panel">
-          <div className="panel-body stack-sm">
-            <div className="spread">
-              <h3 className="page-title-sm">{f.title}</h3>
-              <div className="row" style={{ gap: 6 }}>
-                <Badge variant={f.severity === 'high' ? 'danger' : f.severity === 'medium' ? 'warn' : 'info'} dot>
-                  {f.severity}
-                </Badge>
-                <Badge variant="muted">{(f.confidence * 100).toFixed(0)}% confidence</Badge>
+      <div className="panel">
+        <div className="panel-body">
+          <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: 'var(--ink)', fontWeight: 600 }}>
+              {findings.length} actionable finding{findings.length !== 1 ? 's' : ''}
+            </span>
+            {sortedAgents.map((agentId) => {
+              const count = byAgent.get(agentId)!.length;
+              const meta = AGENT_META[agentId] ?? { label: agentId, icon: '🤖' };
+              return (
+                <span key={agentId} className="row" style={{ gap: 5, fontSize: 12, color: 'var(--muted)' }}>
+                  <span aria-hidden="true">{meta.icon}</span>
+                  {meta.label.replace(' Agent', '').replace(' Investigator', '')}: {count}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      {sortedAgents.flatMap((agentId) =>
+        (byAgent.get(agentId) ?? []).map((f) => <FindingCard key={f.id} finding={f} />),
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Root Cause Tab                                                      */
+/* ------------------------------------------------------------------ */
+
+function HypothesisCard({ h, index }: { h: Hypothesis; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const statusVariant = h.status === 'supported' ? 'success' : h.status === 'possible' ? 'info' : 'muted';
+  const statusLabel = h.status === 'supported' ? '✓ SUPPORTED' : h.status === 'possible' ? '~ POSSIBLE' : '✕ REJECTED';
+
+  return (
+    <article className="panel" style={{
+      borderColor: h.status === 'supported' ? 'rgba(183,243,107,.3)' : h.status === 'rejected' ? 'rgba(255,255,255,.04)' : undefined,
+      opacity: h.status === 'rejected' ? 0.7 : 1,
+    }}>
+      <button
+        className="panel-head"
+        style={{ width: '100%', background: 'none', border: 0, cursor: 'pointer', textAlign: 'left' }}
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <span className="subtle" style={{ fontSize: 11, marginBottom: 4, display: 'block' }}>
+            Hypothesis {index + 1}
+          </span>
+          <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.45, color: h.status === 'rejected' ? 'var(--muted)' : 'var(--ink)' }}>
+            {h.statement}
+          </p>
+        </div>
+        <div className="row" style={{ gap: 8, flex: 'none' }}>
+          <Badge variant={statusVariant} dot>{statusLabel}</Badge>
+          <span className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>
+            {Math.round(h.score * 100)}%
+          </span>
+          <span className="subtle" style={{ fontSize: 11 }} aria-hidden="true">{expanded ? '▲' : '▼'}</span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="panel-body stack" style={{ borderTop: '1px solid var(--line)' }}>
+          <div className="card-grid-2" style={{ gap: 12 }}>
+            <div>
+              <p className="panel-title" style={{ marginBottom: 8, color: 'var(--accent)' }}>Supporting evidence</p>
+              {h.supporting.length > 0 ? (
+                <ul className="list-plain" style={{ gap: 6 }}>
+                  {h.supporting.slice(0, 4).map((ev) => (
+                    <li key={ev.id} style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
+                      {ev.location?.file && <span className="chip mono" style={{ fontSize: 10, marginRight: 6 }}>{ev.location.file}</span>}
+                      {ev.description}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subtle" style={{ fontSize: 12 }}>No direct supporting evidence.</p>
+              )}
+            </div>
+            <div>
+              <p className="panel-title" style={{ marginBottom: 8, color: 'var(--danger)' }}>Contradicting evidence</p>
+              {h.contradicting.length > 0 ? (
+                <ul className="list-plain" style={{ gap: 6 }}>
+                  {h.contradicting.slice(0, 4).map((ev) => (
+                    <li key={ev.id} style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
+                      {ev.location?.file && <span className="chip mono" style={{ fontSize: 10, marginRight: 6 }}>{ev.location.file}</span>}
+                      {ev.description}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subtle" style={{ fontSize: 12 }}>No contradicting evidence.</p>
+              )}
+            </div>
+          </div>
+          {h.corroboratedBy.length > 0 && (
+            <div>
+              <span className="panel-title" style={{ marginRight: 8 }}>Corroborated by</span>
+              <div className="row" style={{ gap: 6, marginTop: 6 }}>
+                {h.corroboratedBy.map((agentId) => {
+                  const meta = AGENT_META[agentId] ?? { label: agentId, icon: '🤖' };
+                  return (
+                    <span key={agentId} className="chip" style={{ fontSize: 11 }}>
+                      {meta.icon} {meta.label.replace(' Agent', '').replace(' Investigator', '')}
+                    </span>
+                  );
+                })}
               </div>
             </div>
-            <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{f.summary}</p>
-            {f.impact && <p className="subtle" style={{ margin: 0, fontSize: 12, fontStyle: 'italic' }}>{f.impact}</p>}
-            {f.files.length > 0 && (
-              <div className="row" style={{ gap: 6 }}>
-                {f.files.slice(0, 6).map((file) => <span key={file} className="chip">{file}</span>)}
-                {f.files.length > 6 && <span className="chip">+{f.files.length - 6} more</span>}
-              </div>
-            )}
+          )}
+          <div style={{ marginTop: 6 }}>
+            <ConfidenceMeter value={h.score} label="score" />
           </div>
-        </article>
-      ))}
-    </div>
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -342,63 +726,125 @@ function RootCauseTab({ inv }: { inv: Investigation }) {
   const rc = inv.rootCause;
   if (!rc) return <Pending what="Root cause" hint="Correlation runs after the analysis agents finish." />;
 
+  const supported = rc.hypotheses.filter((h) => h.status === 'supported');
+  const possible = rc.hypotheses.filter((h) => h.status === 'possible');
+  const rejected = rc.hypotheses.filter((h) => h.status === 'rejected');
+
   return (
     <div className="stack">
+      {/* Root cause verdict */}
       <Card title="Root cause">
         <div className="stack">
-          <p style={{ margin: 0, fontSize: 15, fontWeight: 600, lineHeight: 1.5 }}>{rc.statement}</p>
+          <p style={{ margin: 0, fontSize: 16, fontWeight: 700, lineHeight: 1.45, color: 'var(--ink)' }}>
+            {rc.statement}
+          </p>
           <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{rc.detail}</p>
-          <div className="row" style={{ gap: 12 }}>
-            <div className="meter" style={{ flex: 1 }} role="img" aria-label={`Confidence ${(rc.confidence * 100).toFixed(0)} percent`}>
-              <div className="meter-fill" style={{ width: `${rc.confidence * 100}%` }} />
-            </div>
-            <span className="mono" style={{ fontSize: 13, fontWeight: 700 }}>{(rc.confidence * 100).toFixed(0)}%</span>
-          </div>
+          <ConfidenceMeter value={rc.confidence} label="confidence" />
           {rc.margin < 0.2 && (
             <div className="alert" style={{ borderColor: 'rgba(251,191,36,.34)', background: 'var(--warn-soft)', color: 'var(--warn)' }}>
               <span>Low margin over the next hypothesis — treat this ranking as a shortlist, not a verdict.</span>
             </div>
           )}
+          {rc.affectedComponents.length > 0 && (
+            <div>
+              <p className="panel-title" style={{ marginBottom: 6 }}>Affected components</p>
+              <div className="row" style={{ gap: 6 }}>
+                {rc.affectedComponents.map((c) => (
+                  <span key={c} className="chip">{c}</span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 
+      {/* Evidence chain → root cause */}
+      {rc.evidence.length > 0 && (
+        <Card title="Evidence chain">
+          <div className="stack">
+            {rc.evidence.slice(0, 6).map((ev, i) => (
+              <div key={ev.id}>
+                <div style={{ paddingLeft: 12, borderLeft: '2px solid var(--accent)', marginBottom: 4 }}>
+                  <div className="row" style={{ gap: 8 }}>
+                    <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.07em' }}>
+                      Evidence #{i + 1}
+                    </span>
+                    <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                      {ev.kind}
+                    </span>
+                  </div>
+                  {ev.location?.file && (
+                    <span className="chip mono" style={{ fontSize: 10, marginTop: 4, display: 'inline-flex' }}>
+                      {ev.location.file}{ev.location.line ? `:${ev.location.line}` : ''}
+                    </span>
+                  )}
+                  <p className="muted" style={{ margin: '6px 0 0', fontSize: 13, lineHeight: 1.55 }}>{ev.description}</p>
+                  {ev.snippet && (
+                    <pre className="code" style={{ marginTop: 8, fontSize: 11 }}>{ev.snippet}</pre>
+                  )}
+                </div>
+                {i < rc.evidence.slice(0, 6).length - 1 && (
+                  <div style={{ paddingLeft: 5, color: 'var(--accent)', fontSize: 14, margin: '4px 0' }}>↓</div>
+                )}
+              </div>
+            ))}
+            <div style={{ paddingLeft: 5, color: 'var(--accent)', fontSize: 14 }}>↓</div>
+            <div style={{ padding: '10px 14px', background: 'var(--accent-soft)', border: '1px solid rgba(183,243,107,.3)', borderRadius: 10 }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>Root cause identified</p>
+              <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink)', lineHeight: 1.5 }}>{rc.statement}</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Failure path */}
       {rc.failurePath.length > 0 && (
-        <Card title="Failure path">
+        <Card title="Execution failure path">
           <ol className="list-num">
-            {rc.failurePath.map((step, i) => <li key={i}>{step.step}</li>)}
+            {rc.failurePath.map((step, i) => (
+              <li key={i} style={{ paddingBottom: 6 }}>
+                <span style={{ color: 'var(--ink)', lineHeight: 1.5 }}>{step.step}</span>
+                {step.file && (
+                  <span className="chip mono" style={{ fontSize: 10, marginLeft: 8 }}>{step.file}{step.line ? `:${step.line}` : ''}</span>
+                )}
+              </li>
+            ))}
           </ol>
         </Card>
       )}
 
-      <Card title="Evidence matrix" flush>
-        <div style={{ overflowX: 'auto' }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Hypothesis</th>
-                <th>Status</th>
-                <th>Score</th>
-                <th>Corroborated by</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rc.hypotheses.map((h) => (
-                <tr key={h.id}>
-                  <td style={{ maxWidth: 380 }}>
-                    {h.statement.length > 90 ? `${h.statement.slice(0, 90).trimEnd()}…` : h.statement}
-                  </td>
-                  <td><Badge variant={h.status === 'supported' ? 'success' : h.status === 'possible' ? 'info' : 'muted'} dot>{h.status}</Badge></td>
-                  <td className="mono" style={{ textAlign: 'right' }}>{(h.score * 100).toFixed(0)}%</td>
-                  <td className="mono" style={{ fontSize: 11 }}>{h.corroboratedBy.join(', ') || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Hypothesis analysis */}
+      <div className="section-heading" style={{ marginBottom: 0 }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Hypothesis analysis</h3>
+        <div className="row" style={{ gap: 8 }}>
+          {supported.length > 0 && <Badge variant="success" dot>{supported.length} supported</Badge>}
+          {possible.length > 0 && <Badge variant="info" dot>{possible.length} possible</Badge>}
+          {rejected.length > 0 && <Badge variant="muted" dot>{rejected.length} rejected</Badge>}
         </div>
-      </Card>
+      </div>
+
+      {rc.hypotheses.map((h, i) => (
+        <HypothesisCard key={h.id} h={h} index={i} />
+      ))}
+
+      {rc.rejected.length > 0 && (
+        <Card title="Rejected hypotheses (summary)">
+          <ul className="list-plain">
+            {rc.rejected.map((r, i) => (
+              <li key={i} style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
+                <span style={{ color: 'var(--danger)', marginRight: 6 }}>✕</span>{r}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Change Plan Tab                                                     */
+/* ------------------------------------------------------------------ */
 
 function ChangePlanTab({
   inv, onApprove, approving,
@@ -412,40 +858,76 @@ function ChangePlanTab({
 
   if (!plan) return <Pending what="Change plan" hint="A plan is generated once a root cause is confirmed." />;
 
+  const filesAffected = [...new Set(plan.changes.map((c) => c.file))];
+
   return (
     <div className="stack">
-      <Card title="Plan summary">
-        <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{plan.summary}</p>
-        <div className="spread" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
-          <span className="subtle" style={{ fontSize: 12 }}>Plan hash (approval is bound to this value)</span>
-          <span className="chip mono">{plan.planHash}</span>
+      {/* Plan summary header */}
+      <Card title="Change plan summary">
+        <div className="stack">
+          <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{plan.summary}</p>
+          <div className="row" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <span className="chip"><strong style={{ color: 'var(--ink)' }}>{plan.changes.length}</strong> change{plan.changes.length !== 1 ? 's' : ''}</span>
+            <span className="chip"><strong style={{ color: 'var(--ink)' }}>{filesAffected.length}</strong> file{filesAffected.length !== 1 ? 's' : ''}</span>
+            <span className="chip"><strong style={{ color: 'var(--ink)' }}>0</strong> new dependencies</span>
+          </div>
+          <div className="spread" style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+            <span className="subtle" style={{ fontSize: 12 }}>Plan hash (approval is bound to this value)</span>
+            <span className="chip mono">{plan.planHash}</span>
+          </div>
         </div>
       </Card>
 
+      {/* Structured change cards */}
       {plan.changes.map((c) => (
-        <article key={c.id} className="panel">
+        <article key={c.id} className="panel" style={{ borderColor: 'rgba(183,243,107,.12)' }}>
           <div className="panel-head">
-            <h3 className="panel-title">Change #{c.number}</h3>
-            <span className="chip mono">{c.file}</span>
+            <div className="row" style={{ gap: 10 }}>
+              <span className="panel-title" style={{ color: 'var(--accent)' }}>Change #{c.number}</span>
+              <span className="chip mono">{c.file}</span>
+              {c.symbol && c.symbol !== c.file && (
+                <span className="chip mono" style={{ color: 'var(--info)' }}>{c.symbol}</span>
+              )}
+            </div>
           </div>
           <div className="panel-body stack">
-            <dl className="kv">
-              <dt>Current</dt><dd>{c.currentBehavior}</dd>
-              <dt>Required</dt><dd>{c.requiredChange}</dd>
-              <dt>Reason</dt><dd>{c.reason}</dd>
-              <dt style={{ color: 'var(--warn)' }}>Regression risk</dt><dd>{c.regressionRisk}</dd>
-              <dt style={{ color: 'var(--accent)' }}>Verification</dt><dd>{c.verification}</dd>
-            </dl>
-            {c.diffPreview && <pre className="code">{c.diffPreview}</pre>}
+            <div className="card-grid-2" style={{ gap: 12 }}>
+              <div>
+                <p className="panel-title" style={{ marginBottom: 6, color: 'var(--danger)' }}>Current behaviour</p>
+                <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)', lineHeight: 1.55 }}>{c.currentBehavior}</p>
+              </div>
+              <div>
+                <p className="panel-title" style={{ marginBottom: 6, color: 'var(--accent)' }}>Required change</p>
+                <p style={{ margin: 0, fontSize: 13, color: 'var(--ink)', lineHeight: 1.55 }}>{c.requiredChange}</p>
+              </div>
+            </div>
+            <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+              <dl className="kv">
+                <dt>Reason</dt>
+                <dd style={{ color: 'var(--muted)' }}>{c.reason}</dd>
+                <dt style={{ color: 'var(--warn)' }}>Regression risk</dt>
+                <dd style={{ color: 'var(--muted)' }}>{c.regressionRisk}</dd>
+                <dt style={{ color: 'var(--accent)' }}>Verification method</dt>
+                <dd style={{ color: 'var(--muted)' }}>{c.verification}</dd>
+              </dl>
+            </div>
+            {c.diffPreview && (
+              <div>
+                <p className="panel-title" style={{ marginBottom: 6 }}>Diff preview</p>
+                <pre className="code">{c.diffPreview}</pre>
+              </div>
+            )}
           </div>
         </article>
       ))}
 
+      {/* Considered and rejected alternatives */}
       {plan.consideredAndRejected.length > 0 && (
-        <Card title="Considered and rejected">
+        <Card title="Considered and rejected alternatives">
           <ul className="list-plain">
             {plan.consideredAndRejected.map((r, i) => (
               <li key={i} style={{ fontSize: 13 }}>
+                <span style={{ color: 'var(--danger)', marginRight: 6 }}>✕</span>
                 <span style={{ color: 'var(--ink)' }}>{r.statement}</span>
                 <span className="muted"> — {r.why}</span>
               </li>
@@ -454,13 +936,39 @@ function ChangePlanTab({
         </Card>
       )}
 
+      {/* Human approval gate */}
       {inv.status === 'awaiting_approval' && (
-        <div className="panel" style={{ borderColor: 'rgba(251,191,36,.34)' }}>
+        <div className="panel" style={{ borderColor: 'rgba(251,191,36,.4)' }}>
+          <div className="panel-head">
+            <p className="banner-title" style={{ color: 'var(--warn)', margin: 0 }}>⏸ Human approval required</p>
+          </div>
           <div className="panel-body stack">
-            <p className="banner-title" style={{ color: 'var(--warn)' }}>⏸ Approve to continue</p>
+            <div className="card-grid-2" style={{ gap: 12 }}>
+              <div className="stack-sm">
+                <p className="panel-title">Files to modify</p>
+                <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--ink)' }}>{filesAffected.length}</p>
+              </div>
+              <div className="stack-sm">
+                <p className="panel-title">New dependencies</p>
+                <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--ink)' }}>0</p>
+              </div>
+              <div className="stack-sm">
+                <p className="panel-title">Regression risk</p>
+                <p style={{ margin: 0, fontSize: 13, color: 'var(--warn)' }}>
+                  {plan.changes[0]?.regressionRisk ?? 'Low — targeted fix'}
+                </p>
+              </div>
+              <div className="stack-sm">
+                <p className="panel-title">Verification planned</p>
+                <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>
+                  {plan.changes[0]?.verification ?? 'Run existing test suite'}
+                </p>
+              </div>
+            </div>
             <p className="banner-text" style={{ margin: 0 }}>
-              Approving authorises the implementation agent to apply only the changes above. If the
-              plan changes after this point, approval is rejected on the hash check.
+              Approving authorises the implementation agent to apply <strong>only the changes above</strong>.
+              If the plan changes after this point, the approval is rejected on the hash check.
+              Clicking <em>Reject</em> returns to the change plan without writing any files.
             </p>
             <label className="field">
               <span className="field-label">Approval note (optional)</span>
@@ -472,32 +980,65 @@ function ChangePlanTab({
                 placeholder="Why you are approving this plan…"
               />
             </label>
-            <button className="btn btn-warn btn-lg" onClick={() => onApprove(note)} disabled={approving}>
-              {approving ? 'Approving…' : '✓ Approve fix plan'}
-            </button>
+            <div className="row" style={{ gap: 10 }}>
+              <button className="btn btn-sm" onClick={() => {/* reject: stay on page */}}>
+                ✕ Reject plan
+              </button>
+              <button className="btn btn-warn btn-lg" onClick={() => onApprove(note)} disabled={approving}>
+                {approving ? 'Approving…' : '✓ Approve fix plan'}
+              </button>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* Show approval record after approval */}
+      {inv.approval && (
+        <Card title="Approval record">
+          <dl className="kv">
+            <dt>Approved by</dt><dd>{inv.approval.approvedBy}</dd>
+            <dt>Approved at</dt><dd>{new Date(inv.approval.approvedAt).toLocaleString()}</dd>
+            <dt>Plan hash</dt><dd className="mono" style={{ fontSize: 12 }}>{inv.approval.planHash}</dd>
+            {inv.approval.note && <><dt>Note</dt><dd>{inv.approval.note}</dd></>}
+          </dl>
+        </Card>
       )}
     </div>
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Implementation Tab                                                  */
+/* ------------------------------------------------------------------ */
+
 function ImplementationTab({ inv }: { inv: Investigation }) {
   const impl = inv.implementation;
   if (!impl) return <Pending what="Implementation" hint="The implementation agent runs after the plan is approved." />;
+  const [showFullDiff, setShowFullDiff] = useState(false);
 
   return (
     <div className="stack">
-      <Card title="Implementation">
+      <Card title="Implementation summary">
         <div className="stack">
           <div className="row" style={{ gap: 8 }}>
             {statusBadge(impl.status)}
             <span className="chip mono">{duration(impl.durationMs)}</span>
-            <span className="chip mono">{impl.diffStat}</span>
+            <span className="chip mono">{impl.diffStat || '—'}</span>
+            <span className="chip">{impl.filesModified.length} file{impl.filesModified.length !== 1 ? 's' : ''} modified</span>
           </div>
+          {impl.filesModified.length > 0 && (
+            <div>
+              <p className="panel-title" style={{ marginBottom: 6 }}>Files changed</p>
+              <div className="row" style={{ gap: 6 }}>
+                {impl.filesModified.map((f) => <span key={f} className="chip mono">{f}</span>)}
+              </div>
+            </div>
+          )}
           {impl.notes.length > 0 && (
-            <ul className="list-plain">
-              {impl.notes.map((n, i) => <li key={i} className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>{n}</li>)}
+            <ul className="list-plain" style={{ gap: 4 }}>
+              {impl.notes.map((n, i) => (
+                <li key={i} className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>{n}</li>
+              ))}
             </ul>
           )}
         </div>
@@ -505,7 +1046,7 @@ function ImplementationTab({ inv }: { inv: Investigation }) {
 
       {impl.appliedChanges.length === 0 ? (
         <div className="alert">
-          <span>No change was written to the workspace. The applied count is the honest result here — the run did not modify files.</span>
+          <span>No change was written to the workspace. The applied count is the honest result — the run did not modify files.</span>
         </div>
       ) : (
         impl.appliedChanges.map((c) => (
@@ -516,7 +1057,21 @@ function ImplementationTab({ inv }: { inv: Investigation }) {
             </div>
             <div className="panel-body stack-sm">
               {c.note && <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>{c.note}</p>}
-              {c.diff && <pre className="code">{c.diff}</pre>}
+              {c.diff && (
+                <div>
+                  <p className="panel-title" style={{ marginBottom: 6 }}>Applied diff</p>
+                  <pre className="code" style={{ fontSize: 11 }}>{c.diff.slice(0, showFullDiff ? undefined : 600)}</pre>
+                  {c.diff.length > 600 && (
+                    <button
+                      className="btn btn-link btn-sm"
+                      onClick={() => setShowFullDiff((s) => !s)}
+                      style={{ marginTop: 6 }}
+                    >
+                      {showFullDiff ? '▲ Collapse' : `▼ Show full diff (${c.diff.length} chars)`}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </article>
         ))
@@ -525,141 +1080,315 @@ function ImplementationTab({ inv }: { inv: Investigation }) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Verification Tab                                                    */
+/* ------------------------------------------------------------------ */
+
 function VerificationTab({ inv }: { inv: Investigation }) {
   const ver = inv.verification;
   if (!ver) return <Pending what="Verification" hint="Verification runs once the implementation stage finishes." />;
 
+  const passed = ver.checks.filter((c) => c.status === 'pass').length;
+  const failed = ver.checks.filter((c) => c.status === 'fail').length;
+  const skipped = ver.checks.filter((c) => c.status === 'skipped' || c.status === 'not_available').length;
+
   return (
     <div className="stack">
-      <Card title="Verification">
+      {/* Overall result */}
+      <Card title="Verification result">
         <div className="stack-sm">
-          <div className="row" style={{ gap: 8 }}>{statusBadge(ver.status)}</div>
+          <div className="row" style={{ gap: 8 }}>
+            {statusBadge(ver.status)}
+            <span className="chip" style={{ color: 'var(--accent)' }}>{passed} passed</span>
+            {failed > 0 && <span className="chip" style={{ color: 'var(--danger)' }}>{failed} failed</span>}
+            {skipped > 0 && <span className="chip" style={{ color: 'var(--subtle)' }}>{skipped} skipped</span>}
+            <span className="chip mono">{duration(ver.durationMs)}</span>
+          </div>
           <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{ver.summary}</p>
         </div>
       </Card>
 
+      {/* Before / After comparison — prominently placed */}
       {ver.before && (
-        <div className="card-grid-2">
-          <Card title="Before">
-            <dl className="kv">
-              <dt>Expected</dt><dd>{ver.before.bugReproduction.expected}</dd>
-              <dt>Observed</dt><dd>{ver.before.bugReproduction.observed}</dd>
-            </dl>
-            <div style={{ marginTop: 10 }}><Badge variant="danger" dot>fail</Badge></div>
-          </Card>
-          <Card title="After">
-            <dl className="kv">
-              <dt>Expected</dt><dd>{ver.before.postFix.expected}</dd>
-              <dt>Observed</dt><dd>{ver.before.postFix.observed}</dd>
-            </dl>
-            <div style={{ marginTop: 10 }}>
-              <Badge variant={ver.before.postFix.status === 'pass' ? 'success' : 'danger'} dot>
-                {ver.before.postFix.status}
-              </Badge>
-            </div>
-          </Card>
+        <div>
+          <div className="section-heading" style={{ marginBottom: 8 }}>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>Before / After comparison</h3>
+          </div>
+          <div className="card-grid-2">
+            <article className="panel" style={{ borderColor: 'rgba(248,113,113,.3)' }}>
+              <div className="panel-head">
+                <h4 className="panel-title">BEFORE</h4>
+                <Badge variant="danger" dot>FAIL</Badge>
+              </div>
+              <div className="panel-body stack-sm">
+                <dl className="kv">
+                  <dt>Expected</dt><dd>{ver.before.bugReproduction.expected}</dd>
+                  <dt>Observed</dt><dd style={{ color: 'var(--danger)' }}>{ver.before.bugReproduction.observed}</dd>
+                </dl>
+                {ver.before.bugReproduction.status && (
+                  <p className="subtle" style={{ margin: 0, fontSize: 12 }}>Status: {ver.before.bugReproduction.status}</p>
+                )}
+              </div>
+            </article>
+            <article className="panel" style={{ borderColor: 'rgba(183,243,107,.3)' }}>
+              <div className="panel-head">
+                <h4 className="panel-title">AFTER</h4>
+                <Badge variant={ver.before.postFix.status === 'pass' ? 'success' : 'danger'} dot>
+                  {ver.before.postFix.status.toUpperCase()}
+                </Badge>
+              </div>
+              <div className="panel-body stack-sm">
+                <dl className="kv">
+                  <dt>Expected</dt><dd>{ver.before.postFix.expected}</dd>
+                  <dt>Observed</dt>
+                  <dd style={{ color: ver.before.postFix.status === 'pass' ? 'var(--accent)' : 'var(--danger)' }}>
+                    {ver.before.postFix.observed}
+                  </dd>
+                </dl>
+              </div>
+            </article>
+          </div>
         </div>
       )}
 
-      <div className="stack">
-        {ver.checks.map((c) => (
-          <article key={c.id} className="panel">
-            <div className="panel-head">
-              <h3 className="page-title-sm" style={{ fontSize: 14 }}>{c.name}</h3>
-              <Badge variant={c.status === 'pass' ? 'success' : c.status === 'fail' ? 'danger' : c.status === 'not_available' ? 'muted' : 'warn'} dot>
-                {c.status.replace(/_/g, ' ')}
-              </Badge>
-            </div>
-            <div className="panel-body stack-sm">
-              <p className="muted" style={{ margin: 0, fontSize: 13 }}>{c.summary}</p>
-              {c.command && <pre className="code">{c.command}</pre>}
-              {c.failedTests.length > 0 && (
-                <div className="stack-sm">
-                  <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.08em' }}>
-                    Failed tests
-                  </span>
-                  {c.failedTests.slice(0, 8).map((t, i) => <pre key={i} className="code" style={{ color: 'var(--danger)' }}>{t}</pre>)}
+      {/* Individual checks */}
+      <div>
+        <div className="section-heading" style={{ marginBottom: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>Individual checks</h3>
+        </div>
+        <div className="stack">
+          {ver.checks.map((c) => (
+            <article key={c.id} className="panel" style={{
+              borderColor: c.status === 'fail' ? 'rgba(248,113,113,.3)' : c.status === 'pass' ? 'rgba(183,243,107,.18)' : undefined,
+            }}>
+              <div className="panel-head">
+                <div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <h3 className="page-title-sm" style={{ fontSize: 14 }}>{c.name}</h3>
+                    {c.origin === 'repro' && (
+                      <span className="chip" style={{ fontSize: 10, color: 'var(--warn)' }}>Bug reproduction</span>
+                    )}
+                    {c.origin === 'regression' && (
+                      <span className="chip" style={{ fontSize: 10, color: 'var(--info)' }}>Regression check</span>
+                    )}
+                  </div>
+                  {c.totalTests != null && (
+                    <span className="subtle" style={{ fontSize: 11 }}>
+                      {c.passedTests ?? 0}/{c.totalTests} tests passed
+                    </span>
+                  )}
                 </div>
-              )}
-            </div>
-          </article>
-        ))}
+                <div className="row" style={{ gap: 8 }}>
+                  <Badge variant={
+                    c.status === 'pass' ? 'success' :
+                    c.status === 'fail' ? 'danger' :
+                    c.status === 'not_available' ? 'muted' : 'warn'
+                  } dot>
+                    {c.status === 'pass' ? '✓ PASS' :
+                     c.status === 'fail' ? '✕ FAIL' :
+                     c.status.replace(/_/g, ' ').toUpperCase()}
+                  </Badge>
+                  <span className="chip mono">{duration(c.durationMs)}</span>
+                </div>
+              </div>
+              <div className="panel-body stack-sm">
+                <p className="muted" style={{ margin: 0, fontSize: 13 }}>{c.summary}</p>
+                {c.command && <pre className="code" style={{ fontSize: 11 }}>{c.command}</pre>}
+                {c.failedTests.length > 0 && (
+                  <div className="stack-sm">
+                    <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                      Failed tests ({c.failedTests.length})
+                    </span>
+                    {c.failedTests.slice(0, 8).map((t, i) => (
+                      <pre key={i} className="code" style={{ color: 'var(--danger)', fontSize: 11 }}>{t}</pre>
+                    ))}
+                  </div>
+                )}
+                {c.outputTail && c.status === 'fail' && (
+                  <div>
+                    <p className="panel-title" style={{ marginBottom: 4 }}>Output</p>
+                    <pre className="code" style={{ fontSize: 11, color: 'var(--danger)', maxHeight: 160, overflow: 'auto' }}>
+                      {c.outputTail}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Regression Tab                                                      */
+/* ------------------------------------------------------------------ */
+
 function RegressionTab({ inv }: { inv: Investigation }) {
   const reg = inv.regression;
-  if (!reg) return <Pending what="Regression" hint="Regression analysis runs after verification." />;
+  if (!reg) return <Pending what="Regression analysis" hint="Regression analysis runs after verification." />;
 
   return (
     <div className="stack">
-      <Card title="Regression">
+      <Card title="Regression analysis">
         <div className="stack-sm">
-          <div className="row" style={{ gap: 8 }}>{statusBadge(reg.status)}</div>
+          <div className="row" style={{ gap: 8 }}>
+            <Badge
+              variant={reg.status === 'clean' ? 'success' : reg.status === 'risk-detected' ? 'warn' : 'muted'}
+              dot
+            >
+              {reg.status === 'clean' ? '✓ Clean' : reg.status === 'risk-detected' ? '⚠ Risk detected' : 'Not available'}
+            </Badge>
+            <span className="chip mono">{duration(reg.durationMs)}</span>
+            {reg.impacts.length > 0 && (
+              <span className="chip">{reg.impacts.length} impact{reg.impacts.length !== 1 ? 's' : ''} found</span>
+            )}
+          </div>
           <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{reg.summary}</p>
         </div>
       </Card>
 
-      {reg.impacts.length > 0 && (
-        <Card title="Impact analysis">
-          <ul className="list-plain">
-            {reg.impacts.slice(0, 10).map((impact, i) => (
-              <li key={i} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
-                <Badge variant={impact.severity === 'high' ? 'danger' : impact.severity === 'medium' ? 'warn' : 'info'} dot>
-                  {impact.severity}
-                </Badge>
-                <div style={{ minWidth: 0 }}>
-                  <div className="row" style={{ gap: 8 }}>
-                    <span className="chip mono">{impact.file}</span>
-                    <span className="subtle" style={{ fontSize: 11 }}>{impact.kind}</span>
-                  </div>
-                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 12.5, lineHeight: 1.55 }}>{impact.detail}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Card>
+      {/* Original bug re-test — most important result */}
+      {reg.originalBugRetested && (
+        <article className="panel" style={{
+          borderColor: reg.originalBugRetested.status === 'pass' ? 'rgba(183,243,107,.3)' : 'rgba(248,113,113,.3)',
+        }}>
+          <div className="panel-head">
+            <div>
+              <p className="panel-title" style={{ marginBottom: 4 }}>Original bug re-test</p>
+              <span style={{ fontSize: 13, color: 'var(--ink)' }}>{reg.originalBugRetested.name}</span>
+            </div>
+            <Badge
+              variant={reg.originalBugRetested.status === 'pass' ? 'success' : 'danger'}
+              dot
+            >
+              {reg.originalBugRetested.status === 'pass' ? '✓ FIXED' : '✕ STILL FAILING'}
+            </Badge>
+          </div>
+          <div className="panel-body stack-sm">
+            <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>{reg.originalBugRetested.summary}</p>
+            {reg.originalBugRetested.command && (
+              <pre className="code" style={{ fontSize: 11 }}>{reg.originalBugRetested.command}</pre>
+            )}
+          </div>
+        </article>
       )}
 
-      {reg.originalBugRetested && (
-        <Card title="Original bug re-test">
+      {/* Impact analysis */}
+      {reg.impacts.length > 0 && (
+        <Card title="Regression impact analysis">
           <div className="stack-sm">
-            <div className="spread">
-              <span style={{ fontSize: 13 }}>{reg.originalBugRetested.name}</span>
-              <Badge variant={reg.originalBugRetested.status === 'pass' ? 'success' : 'danger'} dot>
-                {reg.originalBugRetested.status}
-              </Badge>
+            <p className="subtle" style={{ margin: 0, fontSize: 12 }}>
+              Components and symbols affected by the change, ranked by severity.
+            </p>
+            <div className="stack-sm" style={{ marginTop: 8 }}>
+              {reg.impacts.map((impact, i) => (
+                <div key={i} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
+                  <Badge
+                    variant={impact.severity === 'high' ? 'danger' : impact.severity === 'medium' ? 'warn' : 'info'}
+                    dot
+                  >
+                    {impact.severity}
+                  </Badge>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <span className="chip mono">{impact.file}</span>
+                      {impact.symbol && impact.symbol !== impact.file && (
+                        <span className="chip mono" style={{ color: 'var(--info)' }}>{impact.symbol}</span>
+                      )}
+                      <span className="subtle" style={{ fontSize: 11 }}>{impact.kind}</span>
+                    </div>
+                    <p className="muted" style={{ margin: '4px 0 0', fontSize: 12.5, lineHeight: 1.55 }}>{impact.detail}</p>
+                  </div>
+                </div>
+              ))}
             </div>
-            <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>{reg.originalBugRetested.summary}</p>
           </div>
         </Card>
       )}
 
-      {reg.createdTests.length > 0 && (
+      {/* Regression tests executed */}
+      {reg.executed.length > 0 && (
+        <Card title="Regression checks executed">
+          <div className="stack-sm">
+            {reg.executed.map((c) => (
+              <div key={c.id} className="spread">
+                <span style={{ fontSize: 13, color: 'var(--ink)' }}>{c.name}</span>
+                <div className="row" style={{ gap: 8 }}>
+                  <Badge
+                    variant={c.status === 'pass' ? 'success' : c.status === 'fail' ? 'danger' : 'muted'}
+                    dot
+                  >
+                    {c.status === 'pass' ? '✓ PASS' : c.status === 'fail' ? '✕ FAIL' : c.status}
+                  </Badge>
+                  <span className="chip mono">{duration(c.durationMs)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Generated regression tests */}
+      {reg.createdTests && reg.createdTests.length > 0 && (
         <Card title="Generated regression tests">
           <ul className="list-plain">
             {reg.createdTests.map((t, i) => (
               <li key={i}>
-                <span className="chip mono">{t.file}</span>
+                <div className="row" style={{ gap: 8 }}>
+                  <span className="chip mono">{t.file}</span>
+                  <span style={{ fontSize: 13, color: 'var(--ink)' }}>{t.name}</span>
+                </div>
                 <p className="muted" style={{ margin: '5px 0 0', fontSize: 12.5 }}>{t.description}</p>
               </li>
             ))}
           </ul>
         </Card>
       )}
+
+      {reg.relatedTestFiles.length > 0 && (
+        <Card title="Related test files">
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+            {reg.relatedTestFiles.map((f) => (
+              <span key={f} className="chip mono">{f}</span>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Report Tab                                                          */
+/* ------------------------------------------------------------------ */
+
 function ReportTab({ inv }: { inv: Investigation }) {
   const report = inv.report;
   const metrics = inv.metrics;
-  if (!report) return <Pending what="Report" hint="The engineering report is written once the workflow completes." />;
+  const [copied, setCopied] = useState<'report' | 'pr' | null>(null);
+
+  if (!report) return <Pending what="Engineering report" hint="The report is written once the workflow completes." />;
+
+  function copyText(text: string, which: 'report' | 'pr') {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(which);
+      setTimeout(() => setCopied(null), 2000);
+    }).catch(() => undefined);
+  }
+
+  const prText = [
+    `## Summary\n${report.prSummary.summary}`,
+    `## Root Cause\n${report.prSummary.rootCause}`,
+    `## Changes\n${report.prSummary.changes}`,
+    `## Testing\n${report.prSummary.testing}`,
+    `## Regression Status\n${report.prSummary.regressionStatus}`,
+  ].join('\n\n');
 
   return (
     <div className="stack">
+      {/* Metrics overview */}
       {metrics && (
         <div className="metric-grid">
           {[
@@ -680,11 +1409,12 @@ function ReportTab({ inv }: { inv: Investigation }) {
         </div>
       )}
 
+      {/* Workflow comparison */}
       {metrics?.comparison && (
         <Card title="Workflow comparison">
           <div className="card-grid-3" style={{ alignItems: 'center' }}>
             <div>
-              <p className="metric-label" style={{ marginBottom: 6 }}>Manual baseline (estimated)</p>
+              <p className="metric-label" style={{ marginBottom: 6 }}>Traditional (estimated)</p>
               <p className="metric-value">{metrics.comparison.baseline.totalMinutes} min</p>
               <p className="subtle" style={{ margin: '4px 0 0', fontSize: 12 }}>
                 {metrics.comparison.baseline.manualSteps} manual steps
@@ -692,7 +1422,7 @@ function ReportTab({ inv }: { inv: Investigation }) {
             </div>
             <div style={{ textAlign: 'center', color: 'var(--accent)', fontSize: 22 }} aria-hidden="true">→</div>
             <div>
-              <p className="metric-label" style={{ marginBottom: 6 }}>FixFlow (measured)</p>
+              <p className="metric-label" style={{ marginBottom: 6 }}>FixFlow AI (measured)</p>
               <p className="metric-value" style={{ color: 'var(--accent)' }}>
                 {duration(metrics.comparison.fixflow.totalMinutes * 60_000)}
               </p>
@@ -704,8 +1434,8 @@ function ReportTab({ inv }: { inv: Investigation }) {
           </div>
           <p className="subtle" style={{ margin: '14px 0 0', paddingTop: 12, borderTop: '1px solid var(--line)', fontSize: 12 }}>
             Saved {duration(metrics.comparison.deltas.timeSavedMinutes * 60_000)} against the
-            estimated baseline · {metrics.comparison.deltas.manualStepsReduced} steps automated.
-            The baseline is an estimate, not a measurement.
+            estimated baseline · {metrics.comparison.deltas.manualStepsReduced} steps automated.{' '}
+            <em>The baseline is an estimate, not a measurement.</em>
           </p>
           {metrics.comparison.notes.length > 0 && (
             <ul className="list-plain" style={{ marginTop: 10 }}>
@@ -717,32 +1447,74 @@ function ReportTab({ inv }: { inv: Investigation }) {
         </Card>
       )}
 
+      {/* PR Summary card */}
       <Card
-        title="Engineering report"
+        title="Pull Request summary"
         action={
           <button
             className="btn btn-sm"
-            onClick={() => {
-              const blob = new Blob([report.markdown], { type: 'text/markdown' });
-              const a = document.createElement('a');
-              a.href = URL.createObjectURL(blob);
-              a.download = `fixflow-report-${inv.id.slice(0, 8)}.md`;
-              a.click();
-              URL.revokeObjectURL(a.href);
-            }}
+            onClick={() => copyText(prText, 'pr')}
           >
-            ↓ Download .md
+            {copied === 'pr' ? '✓ Copied' : '⎘ Copy PR summary'}
           </button>
         }
       >
         <div className="stack">
           {[
-            { label: 'PR summary', content: report.prSummary.summary },
+            { label: 'Summary', content: report.prSummary.summary },
+            { label: 'Root cause', content: report.prSummary.rootCause },
+            { label: 'Changes', content: report.prSummary.changes },
+            { label: 'Testing', content: report.prSummary.testing },
+            { label: 'Regression status', content: report.prSummary.regressionStatus },
+          ].map(({ label, content }) => (
+            <div key={label} style={{ paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+              <p className="panel-title" style={{ margin: '0 0 5px' }}>{label}</p>
+              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.7, color: 'var(--muted)', whiteSpace: 'pre-wrap' }}>
+                {content}
+              </p>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Full engineering report */}
+      <Card
+        title="Engineering report"
+        action={
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn btn-sm"
+              onClick={() => copyText(report.markdown, 'report')}
+            >
+              {copied === 'report' ? '✓ Copied' : '⎘ Copy report'}
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={() => {
+                const blob = new Blob([report.markdown], { type: 'text/markdown' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `fixflow-report-${inv.id.slice(0, 8)}.md`;
+                a.click();
+                URL.revokeObjectURL(a.href);
+              }}
+            >
+              ↓ Download .md
+            </button>
+          </div>
+        }
+      >
+        <div className="stack">
+          {[
+            { label: 'Bug summary', content: report.bugSummary },
             { label: 'Root cause', content: report.rootCause },
+            { label: 'Evidence', content: report.evidence },
+            { label: 'Affected execution path', content: report.affectedExecutionPath },
             { label: 'Files changed', content: report.filesChanged },
+            { label: 'Fix implemented', content: report.fixImplemented },
             { label: 'Tests executed', content: report.testsExecuted },
-            { label: 'Before / after', content: report.beforeAfterBehavior },
-            { label: 'Regression', content: report.regressionResults },
+            { label: 'Before / after behaviour', content: report.beforeAfterBehavior },
+            { label: 'Regression results', content: report.regressionResults },
             { label: 'Remaining risks', content: report.remainingRisks },
             { label: 'Recommended follow-up', content: report.recommendedFollowUp },
           ].map(({ label, content }) => (

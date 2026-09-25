@@ -65,13 +65,42 @@ export function DashboardPage() {
       {/* Hero */}
       <div className="dashboard-hero">
         <div>
-          <p className="eyebrow">Autonomous engineering operations</p>
-          <h1 className="dashboard-title">Move from <span>signal</span> to shipped fix.</h1>
+          <p className="eyebrow">Agentic developer workflow</p>
+          <h1 className="dashboard-title">From production bug to <span>verified fix.</span></h1>
           <p className="dashboard-subtitle">
-            Investigate production bugs with coordinated agents, auditable evidence, and a human approval gate before changes land.
+            FixFlow coordinates specialized AI agents to investigate software bugs in parallel, identify
+            evidence-backed root causes, propose the smallest safe change, verify the fix, and check for regressions.
           </p>
+          <div className="workflow-steps">
+            <div className="workflow-step">
+              <span className="workflow-num">01</span>
+              <div>
+                <p className="workflow-step-title">Investigate</p>
+                <p className="workflow-step-desc">Parallel agents + evidence</p>
+              </div>
+            </div>
+            <span className="workflow-arrow">→</span>
+            <div className="workflow-step">
+              <span className="workflow-num">02</span>
+              <div>
+                <p className="workflow-step-title">Fix</p>
+                <p className="workflow-step-desc">Minimal change + human approval</p>
+              </div>
+            </div>
+            <span className="workflow-arrow">→</span>
+            <div className="workflow-step">
+              <span className="workflow-num">03</span>
+              <div>
+                <p className="workflow-step-title">Verify</p>
+                <p className="workflow-step-desc">Tests + regression + report</p>
+              </div>
+            </div>
+          </div>
         </div>
-        <Link to="/new" className="hero-action">+ New investigation</Link>
+        <div className="hero-ctas">
+          <Link to="/new" className="hero-action">+ Start investigation</Link>
+          <Link to="/" className="hero-action-secondary">View demo ↓</Link>
+        </div>
       </div>
 
       {/* Demo bugs */}
