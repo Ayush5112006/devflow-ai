@@ -43,6 +43,8 @@ export function CommandPalette({ open, onClose, extraActions = [] }: Props) {
     { id: 'reports', label: 'Reports', description: 'Investigation reports', icon: '▤', action: () => { navigate('/reports'); onClose(); } },
     { id: 'metrics', label: 'Metrics', description: 'Pipeline metrics', icon: '▦', action: () => { navigate('/metrics'); onClose(); } },
     { id: 'settings', label: 'Settings', description: 'Platform configuration', icon: '⚙', action: () => { navigate('/settings'); onClose(); } },
+    { id: 'integrations', label: 'Integrations', description: 'Connect to GitHub, Jira, Sentry…', icon: '⌥', action: () => { navigate('/integrations'); onClose(); } },
+    { id: 'dependencies', label: 'Dependencies', description: 'Package health and CVE tracking', icon: '◈', action: () => { navigate('/dependencies'); onClose(); } },
   ];
 
   const actions = [...baseActions, ...extraActions];

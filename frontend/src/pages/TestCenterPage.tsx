@@ -1,251 +1,319 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Card } from '../components/Card.js';
-import { Badge } from '../components/Badge.js';
 
-const TEST_SUITES = [
-  {
-    name: 'api.test.js',
-    status: 'fail',
-    total: 12,
-    passed: 10,
-    failed: 2,
-    duration: '1.23s',
-    failures: [
-      'GET /api/orders - expected 200, got 500',
-      'GET /api/orders - response body missing "orders" key',
-    ],
-  },
-  {
-    name: 'predictions.test.js',
-    status: 'pass',
-    total: 8,
-    passed: 8,
-    failed: 0,
-    duration: '0.87s',
-    failures: [],
-  },
-  {
-    name: 'db.test.js',
-    status: 'pass',
-    total: 5,
-    passed: 5,
-    failed: 0,
-    duration: '0.34s',
-    failures: [],
-  },
-  {
-    name: 'frontend.test.js',
-    status: 'fail',
-    total: 6,
-    passed: 4,
-    failed: 2,
-    duration: '0.92s',
-    failures: [
-      'renderDetail() - TypeError: Cannot read properties of undefined',
-      'renderBadge() - expected "NEGATIVE", got undefined',
-    ],
-  },
+interface TestSuite {
+  id: string;
+  name: string;
+  file: string;
+  tests: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  duration: number; // ms
+  coverage?: number;
+  lastRun: string;
+  status: 'pass' | 'fail' | 'running' | 'skip';
+}
+
+interface TestCase {
+  name: string;
+  status: 'pass' | 'fail' | 'skip';
+  duration: number;
+  error?: string;
+}
+
+const SUITES: TestSuite[] = [
+  { id: 'ts1', name: 'Investigation Service', file: 'backend/test/investigationService.test.ts', tests: 23, passed: 23, failed: 0, skipped: 0, duration: 1842, coverage: 87, lastRun: '2 min ago', status: 'pass' },
+  { id: 'ts2', name: 'Manager Agent', file: 'backend/test/managerAgent.test.ts', tests: 11, passed: 10, failed: 1, skipped: 0, duration: 3210, coverage: 72, lastRun: '2 min ago', status: 'fail' },
+  { id: 'ts3', name: 'API Routes', file: 'backend/test/routes.test.ts', tests: 18, passed: 18, failed: 0, skipped: 0, duration: 980, coverage: 91, lastRun: '2 min ago', status: 'pass' },
+  { id: 'ts4', name: 'Evidence Agent', file: 'backend/test/evidenceAgent.test.ts', tests: 7, passed: 6, failed: 0, skipped: 1, duration: 560, coverage: 68, lastRun: '2 min ago', status: 'pass' },
+  { id: 'ts5', name: 'Git Utils', file: 'backend/test/gitUtils.test.ts', tests: 5, passed: 5, failed: 0, skipped: 0, duration: 240, coverage: 94, lastRun: '2 min ago', status: 'pass' },
+  { id: 'ts6', name: 'Frontend Components', file: 'frontend/src/__tests__/components.test.tsx', tests: 14, passed: 11, failed: 2, skipped: 1, duration: 2100, coverage: 55, lastRun: '8 min ago', status: 'fail' },
 ];
 
-const COVERAGE = [
-  { file: 'src/routes/orders.js', coverage: 62, lines: 34, coveredLines: 21 },
-  { file: 'src/routes/predictions.js', coverage: 91, lines: 28, coveredLines: 25 },
-  { file: 'web/app.js', coverage: 48, lines: 112, coveredLines: 54 },
-  { file: 'src/db/setup.js', coverage: 85, lines: 20, coveredLines: 17 },
-];
+const SUITE_CASES: Record<string, TestCase[]> = {
+  ts2: [
+    { name: 'should dispatch evidence agent in parallel', status: 'pass', duration: 210 },
+    { name: 'should dispatch code agent in parallel', status: 'pass', duration: 185 },
+    { name: 'should select agents based on issue category', status: 'pass', duration: 340 },
+    { name: 'should recover gracefully from agent timeout', status: 'fail', duration: 1200, error: 'Timeout: agent did not respond within 1000ms. Expected graceful fallback, got UnhandledPromiseRejection.' },
+    { name: 'should return combined results object', status: 'pass', duration: 95 },
+    { name: 'should mark failed agents as skipped in report', status: 'pass', duration: 88 },
+  ],
+  ts6: [
+    { name: 'renders StageStepper with correct active step', status: 'pass', duration: 45 },
+    { name: 'renders Badge with severity styles', status: 'pass', duration: 32 },
+    { name: 'CommandPalette opens on Ctrl+K', status: 'pass', duration: 110 },
+    { name: 'InvestigationTimeline renders events in order', status: 'fail', duration: 280, error: 'Expected 3 timeline items, received 2. Component may not render pending events.' },
+    { name: 'ActivityLog streams SSE events', status: 'fail', duration: 520, error: 'Cannot mock EventSource in jsdom environment. Missing polyfill.' },
+    { name: 'Card renders with title and children', status: 'pass', duration: 28 },
+    { name: 'PipelineDiagram shows RUNNING state', status: 'skip', duration: 0 },
+  ],
+};
 
-const SUGGESTED_TESTS = [
-  {
-    file: 'test/orders.error.test.js',
-    name: 'GET /api/orders — handles SQL error',
-    description: 'Mocks db.all() to throw an error and asserts 500 response with error JSON.',
-    status: 'suggested',
-  },
-  {
-    file: 'test/api-client.test.js',
-    name: 'getPredictions() — handles 404',
-    description: 'Mocks fetch() to return 404 and asserts error state is displayed.',
-    status: 'suggested',
-  },
-  {
-    file: 'test/regression/render-detail.test.js',
-    name: 'renderDetail() — uses sentiment field',
-    description: 'Asserts renderDetail() reads prediction.sentiment (not prediction.label) for the badge.',
-    status: 'ai-generated',
-  },
-];
+function statusDot(s: TestSuite['status']) {
+  const map = { pass: 'var(--success)', fail: 'var(--danger)', running: 'var(--info)', skip: 'var(--muted)' };
+  return map[s];
+}
+
+function statusLabel(s: TestSuite['status']) {
+  return { pass: 'PASS', fail: 'FAIL', running: 'RUNNING', skip: 'SKIP' }[s];
+}
+
+function coverageColor(n: number) {
+  if (n >= 80) return 'var(--success)';
+  if (n >= 60) return 'var(--warn)';
+  return 'var(--danger)';
+}
 
 export function TestCenterPage() {
-  const [tab, setTab] = useState<'suites' | 'coverage' | 'suggested'>('suites');
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [tab, setTab] = useState<'suites' | 'coverage' | 'history'>('suites');
+  const [selected, setSelected] = useState<TestSuite | null>(null);
+  const [running, setRunning] = useState(false);
 
-  const totalTests = TEST_SUITES.reduce((s, t) => s + t.total, 0);
-  const totalPassed = TEST_SUITES.reduce((s, t) => s + t.passed, 0);
-  const totalFailed = TEST_SUITES.reduce((s, t) => s + t.failed, 0);
+  const totalTests = SUITES.reduce((a, s) => a + s.tests, 0);
+  const totalPassed = SUITES.reduce((a, s) => a + s.passed, 0);
+  const totalFailed = SUITES.reduce((a, s) => a + s.failed, 0);
+  const totalDuration = SUITES.reduce((a, s) => a + s.duration, 0);
+  const avgCoverage = Math.round(SUITES.reduce((a, s) => a + (s.coverage ?? 0), 0) / SUITES.length);
+
+  function handleRunAll() {
+    setRunning(true);
+    setTimeout(() => setRunning(false), 3200);
+  }
+
+  const cases = selected ? (SUITE_CASES[selected.id] ?? []) : [];
 
   return (
-    <div className="page-content stack" style={{ gap: 22 }}>
-      {/* Metrics */}
-      <div className="metric-grid">
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--ink)' }}>{totalTests}</p>
-          <p className="metric-label">Total tests</p>
-        </div>
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--accent)' }}>{totalPassed}</p>
-          <p className="metric-label">Passing</p>
-        </div>
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--danger)' }}>{totalFailed}</p>
-          <p className="metric-label">Failing</p>
-        </div>
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--warn)' }}>
-            {Math.round(COVERAGE.reduce((s, c) => s + c.coverage, 0) / COVERAGE.length)}%
+    <div className="page-content stack-lg">
+      {/* Header */}
+      <div className="spread">
+        <div>
+          <h1 className="page-title">Test Center</h1>
+          <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
+            Test suite results and coverage for the InsightBoard project.
           </p>
-          <p className="metric-label">Avg coverage</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span className="demo-notice">DEMO DATA</span>
+          <button className="btn btn-primary btn-sm" onClick={handleRunAll} disabled={running}>
+            {running ? '⟳ Running…' : '▶ Run All Tests'}
+          </button>
         </div>
       </div>
 
-      {totalFailed > 0 && (
-        <div className="banner banner-bad">
-          <div>
-            <p className="banner-title" style={{ color: 'var(--danger)' }}>✗ {totalFailed} tests failing</p>
-            <p className="banner-text">
-              {TEST_SUITES.filter(s => s.status === 'fail').map(s => s.name).join(', ')} — these failures correlate with known bugs.
-            </p>
-          </div>
-          <Link to="/investigations" className="btn btn-sm" style={{ flex: 'none' }}>See investigations</Link>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="tabs" role="tablist">
+      {/* Metrics */}
+      <div className="metric-grid">
         {[
-          { id: 'suites', label: 'Test Suites' },
-          { id: 'coverage', label: 'Coverage' },
-          { id: 'suggested', label: 'AI-Suggested Tests' },
-        ].map((t) => (
-          <button key={t.id} role="tab" aria-selected={tab === t.id as any} className="tab" onClick={() => setTab(t.id as any)}>
-            {t.label}
-          </button>
+          { label: 'Total Tests', value: totalTests },
+          { label: 'Passing', value: totalPassed, color: 'var(--success)' },
+          { label: 'Failing', value: totalFailed, color: totalFailed > 0 ? 'var(--danger)' : 'var(--ink)' },
+          { label: 'Avg Coverage', value: `${avgCoverage}%`, color: coverageColor(avgCoverage) },
+        ].map(m => (
+          <div key={m.label} className="metric">
+            <div className="metric-value" style={{ color: m.color }}>{m.value}</div>
+            <div className="metric-label">{m.label}</div>
+          </div>
         ))}
       </div>
 
-      {tab === 'suites' && (
-        <div className="stack" style={{ gap: 12 }}>
-          {TEST_SUITES.map((suite) => (
-            <div key={suite.name} className="panel" style={{ overflow: 'hidden' }}>
-              <button
-                className="spread"
-                style={{ width: '100%', padding: '14px 18px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
-                onClick={() => setExpanded(expanded === suite.name ? null : suite.name)}
-              >
-                <div className="row" style={{ gap: 12 }}>
-                  <span style={{ fontSize: 18, color: suite.status === 'pass' ? 'var(--accent)' : 'var(--danger)' }}>
-                    {suite.status === 'pass' ? '✓' : '✗'}
-                  </span>
-                  <span className="mono" style={{ fontSize: 13, color: 'var(--ink)', fontWeight: 600 }}>{suite.name}</span>
-                  <Badge variant={suite.status === 'pass' ? 'success' : 'danger'} dot>{suite.status}</Badge>
-                </div>
-                <div className="row" style={{ gap: 14 }}>
-                  <span style={{ fontSize: 12, color: 'var(--accent)', fontFamily: 'var(--mono)' }}>{suite.passed} passed</span>
-                  {suite.failed > 0 && <span style={{ fontSize: 12, color: 'var(--danger)', fontFamily: 'var(--mono)' }}>{suite.failed} failed</span>}
-                  <span style={{ fontSize: 11, color: 'var(--subtle)', fontFamily: 'var(--mono)' }}>{suite.duration}</span>
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>{expanded === suite.name ? '▲' : '▼'}</span>
-                </div>
-              </button>
-              {expanded === suite.name && (
-                <div style={{ padding: '0 18px 16px', borderTop: '1px solid var(--line)' }}>
-                  <div className="meter" style={{ marginTop: 14, marginBottom: 10 }}>
-                    <div className="meter-fill" style={{ width: `${(suite.passed / suite.total) * 100}%`, background: suite.status === 'pass' ? 'var(--accent)' : 'var(--danger)' }} />
-                  </div>
-                  <p style={{ margin: '0 0 6px', fontSize: 12, color: 'var(--muted)' }}>{suite.passed}/{suite.total} tests passing</p>
-                  {suite.failures.length > 0 && (
+      {/* Overall pass bar */}
+      <div className="panel" style={{ padding: '14px 16px' }}>
+        <div className="spread" style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>Pass Rate</span>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: totalFailed > 0 ? 'var(--danger)' : 'var(--success)' }}>
+            {totalPassed}/{totalTests} — {Math.round((totalPassed / totalTests) * 100)}%
+          </span>
+        </div>
+        <div className="meter">
+          <div className="meter-fill success" style={{ width: `${(totalPassed / totalTests) * 100}%` }} />
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--subtle)' }}>
+          Duration: {(totalDuration / 1000).toFixed(1)}s total · {SUITES.length} suites
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div>
+        <div className="tabs">
+          {(['suites', 'coverage', 'history'] as const).map(t => (
+            <button key={t} className="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
+              {t.charAt(0).toUpperCase() + t.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 16 }}>
+          {tab === 'suites' && (
+            <div style={{ display: 'grid', gridTemplateColumns: selected ? 'minmax(0,1fr) 380px' : '1fr', gap: 16 }}>
+              {/* Suite list */}
+              <div className="panel panel-body-flush">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Suite</th>
+                      <th>Status</th>
+                      <th>Tests</th>
+                      <th>Coverage</th>
+                      <th>Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {SUITES.map(s => (
+                      <tr
+                        key={s.id}
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => setSelected(selected?.id === s.id ? null : s)}
+                      >
+                        <td>
+                          <div style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 13 }}>{s.name}</div>
+                          <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--subtle)', marginTop: 2 }}>{s.file}</div>
+                        </td>
+                        <td>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, color: statusDot(s.status) }}>
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusDot(s.status), display: 'inline-block' }} />
+                            {statusLabel(s.status)}
+                          </span>
+                        </td>
+                        <td>
+                          <span style={{ color: 'var(--ink)' }}>{s.passed}</span>
+                          <span style={{ color: 'var(--subtle)' }}>/{s.tests}</span>
+                          {s.failed > 0 && <span style={{ color: 'var(--danger)', marginLeft: 6 }}>✕{s.failed}</span>}
+                          {s.skipped > 0 && <span style={{ color: 'var(--muted)', marginLeft: 6 }}>⊘{s.skipped}</span>}
+                        </td>
+                        <td>
+                          {s.coverage != null && (
+                            <span style={{ color: coverageColor(s.coverage), fontFamily: 'var(--mono)', fontSize: 12 }}>
+                              {s.coverage}%
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+                          {s.duration < 1000 ? `${s.duration}ms` : `${(s.duration / 1000).toFixed(1)}s`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Test case detail */}
+              {selected && (
+                <div className="panel stack" style={{ padding: 18, gap: 14 }}>
+                  <div className="spread">
                     <div>
-                      <p style={{ margin: '12px 0 6px', fontSize: 11, fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '.08em' }}>Failures</p>
-                      {suite.failures.map((f, i) => (
-                        <div key={i} className="mono" style={{ padding: '6px 10px', background: 'var(--danger-soft)', borderRadius: 7, marginBottom: 4, fontSize: 12, color: 'var(--danger)' }}>
-                          ✗ {f}
+                      <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--ink)' }}>{selected.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--subtle)', marginTop: 2, fontFamily: 'var(--mono)' }}>{selected.file}</div>
+                    </div>
+                    <button className="btn btn-sm btn-ghost" onClick={() => setSelected(null)}>✕</button>
+                  </div>
+
+                  {cases.length === 0 ? (
+                    <p className="muted" style={{ fontSize: 13 }}>
+                      {selected.passed}/{selected.tests} tests passing. No individual test data available in demo.
+                    </p>
+                  ) : (
+                    <div className="stack-sm">
+                      {cases.map((c, i) => (
+                        <div key={i} style={{ padding: '10px 12px', background: 'var(--panel-sunken)', borderRadius: 8, border: `1px solid ${c.status === 'fail' ? 'rgba(239,68,68,.25)' : 'var(--line)'}` }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 12, color: c.status === 'pass' ? 'var(--success)' : c.status === 'fail' ? 'var(--danger)' : 'var(--muted)' }}>
+                              {c.status === 'pass' ? '✓' : c.status === 'fail' ? '✕' : '⊘'}
+                            </span>
+                            <span style={{ fontSize: 12, color: 'var(--ink)', fontWeight: 500 }}>{c.name}</span>
+                            <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--subtle)' }}>
+                              {c.duration > 0 ? `${c.duration}ms` : '-'}
+                            </span>
+                          </div>
+                          {c.error && (
+                            <pre className="code" style={{ marginTop: 8, fontSize: 11, color: '#fca5a5', whiteSpace: 'pre-wrap' }}>
+                              {c.error}
+                            </pre>
+                          )}
                         </div>
                       ))}
-                      <Link to="/new" className="btn btn-sm" style={{ marginTop: 10 }}>Investigate failure</Link>
                     </div>
                   )}
                 </div>
               )}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {tab === 'coverage' && (
-        <Card title="Coverage by File" flush>
-          <table className="table">
-            <thead>
-              <tr><th>File</th><th>Coverage</th><th>Lines</th><th>Covered</th></tr>
-            </thead>
-            <tbody>
-              {COVERAGE.sort((a, b) => a.coverage - b.coverage).map((c) => (
-                <tr key={c.file}>
-                  <td className="mono" style={{ fontSize: 12, color: 'var(--ink)' }}>{c.file}</td>
-                  <td style={{ minWidth: 160 }}>
-                    <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-                      <div className="meter" style={{ flex: 1 }}>
+          {tab === 'coverage' && (
+            <div className="stack">
+              <div className="panel" style={{ padding: 18 }}>
+                <p className="panel-title" style={{ marginBottom: 14 }}>Coverage by Module</p>
+                <div className="stack">
+                  {[
+                    { module: 'investigationService', pct: 87, lines: '412/474' },
+                    { module: 'managerAgent', pct: 72, lines: '198/275' },
+                    { module: 'api/routes', pct: 91, lines: '182/200' },
+                    { module: 'evidenceAgent', pct: 68, lines: '95/140' },
+                    { module: 'gitUtils', pct: 94, lines: '78/83' },
+                    { module: 'pipelineFacts', pct: 55, lines: '44/80' },
+                    { module: 'demoCatalog', pct: 100, lines: '45/45' },
+                    { module: 'analysisEngine', pct: 42, lines: '63/150' },
+                  ].map(r => (
+                    <div key={r.module}>
+                      <div className="spread" style={{ marginBottom: 4 }}>
+                        <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--ink)' }}>{r.module}</span>
+                        <span style={{ fontSize: 12, color: coverageColor(r.pct), fontFamily: 'var(--mono)' }}>{r.pct}% ({r.lines})</span>
+                      </div>
+                      <div className="meter">
                         <div
-                          className="meter-fill"
-                          style={{
-                            width: `${c.coverage}%`,
-                            background: c.coverage >= 80 ? 'var(--accent)' : c.coverage >= 60 ? 'var(--warn)' : 'var(--danger)'
-                          }}
+                          className={`meter-fill ${r.pct >= 80 ? 'success' : r.pct >= 60 ? 'warn' : 'danger'}`}
+                          style={{ width: `${r.pct}%` }}
                         />
                       </div>
-                      <span className="mono" style={{ fontSize: 12, color: c.coverage >= 80 ? 'var(--accent)' : c.coverage >= 60 ? 'var(--warn)' : 'var(--danger)', flex: 'none', width: 36, textAlign: 'right' }}>
-                        {c.coverage}%
-                      </span>
                     </div>
-                  </td>
-                  <td className="mono" style={{ fontSize: 12 }}>{c.lines}</td>
-                  <td className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>{c.coveredLines}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
-
-      {tab === 'suggested' && (
-        <div className="stack" style={{ gap: 12 }}>
-          <div className="banner banner-info">
-            <div>
-              <p className="banner-title" style={{ color: 'var(--info)' }}>AI-Generated Test Suggestions</p>
-              <p className="banner-text">
-                Based on failing tests, uncovered code paths, and known bugs, FixFlow AI suggests tests
-                that would catch existing and regression bugs.
-              </p>
-            </div>
-          </div>
-          {SUGGESTED_TESTS.map((test, i) => (
-            <Card key={i} title={test.name} action={
-              <Badge variant={test.status === 'ai-generated' ? 'info' : 'muted'} dot>
-                {test.status === 'ai-generated' ? 'AI-generated' : 'Suggested'}
-              </Badge>
-            }>
-              <dl className="kv" style={{ rowGap: 8 }}>
-                <dt>File</dt>
-                <dd className="mono" style={{ fontSize: 12 }}>{test.file}</dd>
-                <dt>Description</dt>
-                <dd style={{ fontSize: 13, lineHeight: 1.6 }}>{test.description}</dd>
-              </dl>
-              <div className="row" style={{ gap: 8, marginTop: 12 }}>
-                <button className="btn btn-sm btn-primary">Generate test</button>
-                <button className="btn btn-sm btn-link">Dismiss</button>
+                  ))}
+                </div>
               </div>
-            </Card>
-          ))}
+
+              <div className="alert alert-info" style={{ fontSize: 12 }}>
+                Coverage thresholds: branches &gt;= 60%, lines &gt;= 70%, functions &gt;= 75%. Current project average: {avgCoverage}%.
+              </div>
+            </div>
+          )}
+
+          {tab === 'history' && (
+            <div className="panel panel-body-flush">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Run</th>
+                    <th>Trigger</th>
+                    <th>Pass Rate</th>
+                    <th>Duration</th>
+                    <th>Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { run: '#47', trigger: 'Manual', pass: 95, total: 100, dur: '8.3s', ts: '2 min ago' },
+                    { run: '#46', trigger: 'Pre-merge', pass: 93, total: 100, dur: '9.1s', ts: '1 hour ago' },
+                    { run: '#45', trigger: 'Manual', pass: 88, total: 100, dur: '8.7s', ts: '3 hours ago' },
+                    { run: '#44', trigger: 'Pre-merge', pass: 90, total: 100, dur: '8.9s', ts: '1 day ago' },
+                    { run: '#43', trigger: 'Scheduled', pass: 100, total: 100, dur: '7.8s', ts: '2 days ago' },
+                  ].map(r => (
+                    <tr key={r.run}>
+                      <td style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--ink)' }}>{r.run}</td>
+                      <td>{r.trigger}</td>
+                      <td>
+                        <span style={{ color: r.pass === r.total ? 'var(--success)' : 'var(--warn)' }}>
+                          {r.pass}/{r.total} ({Math.round((r.pass / r.total) * 100)}%)
+                        </span>
+                      </td>
+                      <td style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{r.dur}</td>
+                      <td>{r.ts}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

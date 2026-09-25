@@ -1,294 +1,279 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Card } from '../components/Card.js';
-import { Badge } from '../components/Badge.js';
 
-type IssueStatus = 'confirmed' | 'potential' | 'review';
+type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+type Status = 'confirmed' | 'potential' | 'review';
 
-const SECURITY_FINDINGS: {
+interface Finding {
   id: string;
   title: string;
   file: string;
   line: number;
   category: string;
-  severity: string;
-  status: IssueStatus;
+  severity: Severity;
+  status: Status;
   description: string;
   evidence: string;
   recommendation: string;
-}[] = [
+  cwe?: string;
+}
+
+const FINDINGS: Finding[] = [
   {
     id: 'SEC-001',
-    title: 'SQL Injection Risk — Unparameterised Limit',
+    title: 'SQL Injection — Unparameterised Query',
     file: 'src/routes/orders.js',
     line: 8,
     category: 'Injection',
     severity: 'high',
     status: 'confirmed',
-    description: 'The `limit` and `offset` query parameters are interpolated directly into the SQL query string without parameterisation.',
-    evidence: 'db.all(`SELECT ... LIMIT ${limit} OFFSET ${offset}`) — user-controlled values in SQL template literal.',
-    recommendation: 'Use parameterised queries: db.all(sql, [limit, offset], callback) to prevent SQL injection.',
+    cwe: 'CWE-89',
+    description: 'The `limit` and `offset` query parameters are interpolated directly into the SQL query string without parameterisation, allowing an attacker to manipulate the query.',
+    evidence: 'db.all(`SELECT * FROM orders LIMIT ${limit} OFFSET ${offset}`) — user-controlled values in template literal.',
+    recommendation: 'Use parameterised queries: db.all("SELECT * FROM orders LIMIT ? OFFSET ?", [limit, offset]) to prevent injection.',
   },
   {
     id: 'SEC-002',
+    title: 'Exposed Stack Trace in API Response',
+    file: 'src/routes/orders.js',
+    line: 18,
+    category: 'Information Disclosure',
+    severity: 'medium',
+    status: 'confirmed',
+    cwe: 'CWE-209',
+    description: 'When the SQL query fails, the raw SQLite error including internal schema details is returned directly to the API caller.',
+    evidence: 'res.status(500).json({ error: err.message }) — returns "no such column: o.customer_name" to caller.',
+    recommendation: 'Return a generic error message to clients. Log detailed errors server-side only with a correlation ID.',
+  },
+  {
+    id: 'SEC-003',
     title: 'Missing Input Validation — Prediction Endpoint',
     file: 'src/routes/predictions.js',
     line: 22,
     category: 'Input Handling',
     severity: 'medium',
     status: 'potential',
-    description: 'The POST /api/predictions endpoint accepts a `text` field without length or content validation.',
-    evidence: 'No req.body validation middleware detected. Text field passed directly to ML model invocation.',
-    recommendation: 'Add input validation: maximum length check, sanitization, and reject empty or malformed inputs.',
-  },
-  {
-    id: 'SEC-003',
-    title: 'Exposed Error Details in API Response',
-    file: 'src/routes/orders.js',
-    line: 18,
-    category: 'Information Disclosure',
-    severity: 'medium',
-    status: 'confirmed',
-    description: 'When the SQL query fails, the raw SQLite error message including internal schema details is returned directly to the API client.',
-    evidence: 'res.status(500).json({ error: err.message }) — returns "no such column: o.customer_name" to caller.',
-    recommendation: 'Return a generic error message to clients. Log detailed errors server-side only.',
+    cwe: 'CWE-20',
+    description: 'The POST /api/predictions endpoint accepts a `text` field without length, format, or content validation before passing it to the ML model.',
+    evidence: 'No req.body validation middleware detected. Text field passed directly to ML model invocation without checks.',
+    recommendation: 'Add validation: maximum length (e.g., 10,000 chars), reject empty/null, sanitise before processing.',
   },
   {
     id: 'SEC-004',
-    title: 'No Rate Limiting on API Endpoints',
+    title: 'No Rate Limiting on Public Endpoints',
     file: 'src/api/server.js',
     line: 1,
-    category: 'Configuration',
-    severity: 'low',
-    status: 'review',
-    description: 'No rate limiting middleware is configured. All endpoints accept unlimited requests.',
-    evidence: 'No express-rate-limit, helmet, or equivalent middleware found in server.js or app.js.',
-    recommendation: 'Add rate limiting middleware (e.g., express-rate-limit) for public-facing endpoints.',
+    category: 'API Security',
+    severity: 'medium',
+    status: 'potential',
+    cwe: 'CWE-770',
+    description: 'No rate limiting middleware is applied to public API endpoints. This could allow abuse through brute-force or denial-of-service attacks.',
+    evidence: 'No express-rate-limit, helmet rate-limit, or nginx rate-limit configuration found in codebase.',
+    recommendation: 'Add express-rate-limit: limit per IP to 100 req/15min on public routes, 20 req/15min on auth routes.',
   },
   {
     id: 'SEC-005',
-    title: 'Missing HTTP Security Headers',
+    title: 'Hardcoded Default Credentials',
+    file: 'config/database.js',
+    line: 4,
+    category: 'Credentials',
+    severity: 'high',
+    status: 'review',
+    cwe: 'CWE-798',
+    description: 'A hardcoded default username/password pair is present in the database configuration file. If this file is committed or deployed as-is, credentials may be exposed.',
+    evidence: 'const DB_PASSWORD = "admin123" — literal string, not read from environment.',
+    recommendation: 'Move all credentials to environment variables. Add config/database.js to .gitignore if it contains secrets.',
+  },
+  {
+    id: 'SEC-006',
+    title: 'Missing CORS Restriction',
     file: 'src/api/server.js',
-    line: 1,
+    line: 12,
     category: 'Configuration',
     severity: 'low',
     status: 'review',
-    description: 'No security headers (X-Frame-Options, Content-Security-Policy, X-Content-Type-Options) are set.',
-    evidence: 'Helmet middleware not found in express server setup. Response headers lack security directives.',
-    recommendation: 'Add the helmet middleware: app.use(helmet()) for standard HTTP security headers.',
+    cwe: 'CWE-942',
+    description: 'CORS is configured with a wildcard origin (*) allowing requests from any domain. This is acceptable for public APIs but should be reviewed for authenticated endpoints.',
+    evidence: 'app.use(cors()) with no origin restriction — verified in server configuration.',
+    recommendation: 'For endpoints with authentication, restrict origins: cors({ origin: process.env.ALLOWED_ORIGINS }).',
   },
 ];
 
-const DEPENDENCY_RISKS = [
-  { name: 'sqlite3', current: '5.1.2', latest: '5.1.7', risk: 'low', status: 'outdated', cves: 0, usedIn: ['src/db/setup.js', 'src/routes/'] },
-  { name: 'express', current: '4.18.2', latest: '4.21.0', risk: 'medium', status: 'outdated', cves: 1, usedIn: ['src/api/server.js'] },
-  { name: 'node:test', current: 'built-in', latest: 'N/A', risk: 'low', status: 'current', cves: 0, usedIn: ['test/'] },
-];
+const CATEGORIES = ['All', 'Injection', 'Information Disclosure', 'Input Handling', 'API Security', 'Credentials', 'Configuration'];
+const SEV_ORDER: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
+
+function sevColor(s: Severity) {
+  return { critical: 'badge-critical', high: 'badge-high', medium: 'badge-medium', low: 'badge-low', info: 'badge-info' }[s];
+}
+
+function statusColor(s: Status) {
+  return { confirmed: 'badge-danger', potential: 'badge-warn', review: 'badge-muted' }[s];
+}
+
+function statusLabel(s: Status) {
+  return { confirmed: 'Confirmed', potential: 'Potential', review: 'Needs Review' }[s];
+}
 
 export function SecurityPage() {
-  const [tab, setTab] = useState<'findings' | 'deps' | 'checklist'>('findings');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [category, setCategory] = useState('All');
+  const [selected, setSelected] = useState<Finding | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<string>('all');
 
-  const filtered = statusFilter === 'all' ? SECURITY_FINDINGS : SECURITY_FINDINGS.filter(f => f.status === statusFilter);
+  const filtered = FINDINGS
+    .filter(f => category === 'All' || f.category === category)
+    .filter(f => severityFilter === 'all' || f.severity === severityFilter);
 
-  const confirmed = SECURITY_FINDINGS.filter(f => f.status === 'confirmed').length;
-  const potential = SECURITY_FINDINGS.filter(f => f.status === 'potential').length;
-  const review = SECURITY_FINDINGS.filter(f => f.status === 'review').length;
+  const counts = {
+    critical: FINDINGS.filter(f => f.severity === 'critical').length,
+    high: FINDINGS.filter(f => f.severity === 'high').length,
+    medium: FINDINGS.filter(f => f.severity === 'medium').length,
+    low: FINDINGS.filter(f => f.severity === 'low').length,
+    confirmed: FINDINGS.filter(f => f.status === 'confirmed').length,
+  };
 
   return (
-    <div className="page-content stack" style={{ gap: 22 }}>
-      {/* Summary */}
-      <div className="metric-grid">
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--danger)' }}>{confirmed}</p>
-          <p className="metric-label">Confirmed issues</p>
-        </div>
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--warn)' }}>{potential}</p>
-          <p className="metric-label">Potential issues</p>
-        </div>
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--info)' }}>{review}</p>
-          <p className="metric-label">Needs review</p>
-        </div>
-        <div className="metric">
-          <p className="metric-value" style={{ color: 'var(--muted)' }}>{DEPENDENCY_RISKS.filter(d => d.cves > 0).length}</p>
-          <p className="metric-label">Dependency CVEs</p>
-        </div>
-      </div>
-
-      <div className="banner banner-warn">
+    <div className="page-content stack-lg">
+      {/* Header */}
+      <div className="spread">
         <div>
-          <p className="banner-title" style={{ color: 'var(--warn)' }}>⚠ Security findings require human review</p>
-          <p className="banner-text">
-            FixFlow AI distinguishes confirmed issues (evidence found in code) from potential issues and items needing review.
-            No finding is marked confirmed without code evidence. Always verify before acting.
+          <h1 className="page-title">Security Review</h1>
+          <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
+            Static analysis findings for the InsightBoard project. Review confirmed issues first.
           </p>
         </div>
+        <span className="demo-notice">DEMO DATA</span>
       </div>
 
-      {/* Tabs */}
-      <div className="tabs" role="tablist">
+      {/* Summary bar */}
+      <div className="banner banner-warn">
+        <div>
+          <div className="banner-title">
+            <span style={{ color: 'var(--danger)' }}>⚠</span>
+            {counts.confirmed} confirmed issue{counts.confirmed !== 1 ? 's' : ''} require attention
+          </div>
+          <p className="banner-text">
+            {counts.high} high-severity · {counts.medium} medium-severity · {counts.low} low-severity findings across {FINDINGS.length} total
+          </p>
+        </div>
+        <button className="btn btn-sm" onClick={() => setSeverityFilter('all')}>Show All</button>
+      </div>
+
+      {/* Score cards */}
+      <div className="metric-grid">
         {[
-          { id: 'findings', label: 'Security Findings' },
-          { id: 'deps', label: 'Dependency Health' },
-          { id: 'checklist', label: 'Security Checklist' },
-        ].map((t) => (
+          { label: 'Critical', value: counts.critical, cls: 'badge-critical', filter: 'critical' },
+          { label: 'High', value: counts.high, cls: 'badge-high', filter: 'high' },
+          { label: 'Medium', value: counts.medium, cls: 'badge-medium', filter: 'medium' },
+          { label: 'Low / Info', value: counts.low, cls: 'badge-low', filter: 'low' },
+        ].map(c => (
           <button
-            key={t.id}
-            role="tab"
-            aria-selected={tab === t.id as any}
-            className="tab"
-            onClick={() => setTab(t.id as any)}
+            key={c.label}
+            className="metric"
+            style={{ cursor: 'pointer', textAlign: 'left', border: severityFilter === c.filter ? '1px solid var(--accent)' : undefined }}
+            onClick={() => setSeverityFilter(severityFilter === c.filter ? 'all' : c.filter)}
           >
-            {t.label}
+            <div className="metric-value" style={{ fontSize: 28 }}>{c.value}</div>
+            <div className="metric-label">{c.label}</div>
           </button>
         ))}
       </div>
 
-      {tab === 'findings' && (
-        <div className="stack" style={{ gap: 14 }}>
-          <div className="row" style={{ gap: 6 }}>
-            {[
-              { key: 'all', label: `All (${SECURITY_FINDINGS.length})` },
-              { key: 'confirmed', label: `Confirmed (${confirmed})` },
-              { key: 'potential', label: `Potential (${potential})` },
-              { key: 'review', label: `Needs review (${review})` },
-            ].map((f) => (
+      {/* Main layout */}
+      <div style={{ display: 'grid', gridTemplateColumns: selected ? 'minmax(0,1fr) 380px' : '1fr', gap: 16, alignItems: 'start' }}>
+        {/* Left: findings list */}
+        <div className="stack-sm">
+          {/* Category tabs */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+            {CATEGORIES.map(c => (
               <button
-                key={f.key}
-                className={`btn btn-sm ${statusFilter === f.key ? 'btn-primary' : ''}`}
-                onClick={() => setStatusFilter(f.key)}
+                key={c}
+                className={`btn btn-sm ${category === c ? 'btn-primary' : ''}`}
+                onClick={() => setCategory(c)}
               >
-                {f.label}
+                {c}
               </button>
             ))}
           </div>
-          {filtered.map((finding) => (
-            <div key={finding.id} className={`security-finding security-finding-${finding.status}`}>
-              <div className="spread">
-                <div className="row" style={{ gap: 8 }}>
-                  <span className="chip mono">{finding.id}</span>
-                  <StatusPill status={finding.status} />
-                  <Badge variant={finding.severity === 'high' || finding.severity === 'critical' ? 'danger' : finding.severity === 'medium' ? 'warn' : 'muted'} dot>
-                    {finding.severity}
-                  </Badge>
-                </div>
-                <span className="chip mono" style={{ fontSize: 10 }}>{finding.category}</span>
-              </div>
-              <h3 style={{ margin: '10px 0 8px', fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>{finding.title}</h3>
-              <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>{finding.description}</p>
-              <div style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--panel-sunken)', border: '1px solid var(--line)', marginBottom: 10 }}>
-                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: 'var(--subtle)', textTransform: 'uppercase', letterSpacing: '.08em' }}>Evidence</p>
-                <p className="mono" style={{ margin: 0, fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>{finding.evidence}</p>
-              </div>
-              <div style={{ padding: '8px 12px', borderRadius: 8, background: 'rgba(183,243,107,0.06)', border: '1px solid rgba(183,243,107,0.18)', marginBottom: 12 }}>
-                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '.08em' }}>Recommendation</p>
-                <p style={{ margin: 0, fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>{finding.recommendation}</p>
-              </div>
-              <div className="row" style={{ gap: 8 }}>
-                <span className="chip mono" style={{ fontSize: 10, color: 'var(--info)' }}>{finding.file}:{finding.line}</span>
-                <Link to="/new" className="btn btn-sm" style={{ marginLeft: 'auto' }}>Investigate</Link>
-                <Link to="/code-review" className="btn btn-sm btn-link">Review code</Link>
+
+          {/* Findings */}
+          {filtered.length === 0 ? (
+            <div className="empty">
+              <div className="empty-icon">🔍</div>
+              <p className="empty-title">No findings in this category</p>
+            </div>
+          ) : (
+            filtered
+              .sort((a, b) => SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity))
+              .map(f => (
+                <button
+                  key={f.id}
+                  className={selected?.id === f.id ? 'panel-selected' : 'panel'}
+                  style={{ width: '100%', textAlign: 'left', cursor: 'pointer', padding: '14px 16px', border: undefined }}
+                  onClick={() => setSelected(selected?.id === f.id ? null : f)}
+                >
+                  <div className="spread">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <span className={`badge ${sevColor(f.severity)}`}>{f.severity.toUpperCase()}</span>
+                      <span style={{ color: 'var(--ink)', fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {f.title}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      {f.cwe && <span className="chip" style={{ fontSize: 10 }}>{f.cwe}</span>}
+                      <span className={`badge ${statusColor(f.status)}`}>{statusLabel(f.status)}</span>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 12, fontSize: 11, color: 'var(--subtle)' }}>
+                    <span style={{ fontFamily: 'var(--mono)' }}>{f.file}:{f.line}</span>
+                    <span>{f.category}</span>
+                  </div>
+                </button>
+              ))
+          )}
+        </div>
+
+        {/* Right: detail panel */}
+        {selected && (
+          <div className="panel stack" style={{ padding: 20, gap: 16, position: 'sticky', top: 80 }}>
+            <div className="spread">
+              <span className={`badge ${sevColor(selected.severity)}`}>{selected.severity.toUpperCase()}</span>
+              <button className="btn btn-sm btn-ghost" onClick={() => setSelected(null)}>✕ Close</button>
+            </div>
+
+            <div>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)', marginBottom: 6 }}>{selected.title}</h3>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <span className={`badge ${statusColor(selected.status)}`}>{statusLabel(selected.status)}</span>
+                {selected.cwe && <span className="chip">{selected.cwe}</span>}
+                <span className="chip">{selected.category}</span>
               </div>
             </div>
-          ))}
-        </div>
-      )}
 
-      {tab === 'deps' && (
-        <Card title="Dependency Risk Analysis" flush>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Package</th>
-                <th>Current</th>
-                <th>Latest</th>
-                <th>Status</th>
-                <th>CVEs</th>
-                <th>Risk</th>
-                <th>Used in</th>
-              </tr>
-            </thead>
-            <tbody>
-              {DEPENDENCY_RISKS.map((dep) => (
-                <tr key={dep.name}>
-                  <td className="mono" style={{ color: 'var(--ink)', fontWeight: 600 }}>{dep.name}</td>
-                  <td className="mono" style={{ fontSize: 12 }}>{dep.current}</td>
-                  <td className="mono" style={{ fontSize: 12, color: dep.status === 'outdated' ? 'var(--warn)' : 'var(--muted)' }}>{dep.latest}</td>
-                  <td>
-                    <Badge variant={dep.status === 'current' ? 'success' : 'warn'} dot>{dep.status}</Badge>
-                  </td>
-                  <td style={{ color: dep.cves > 0 ? 'var(--danger)' : 'var(--subtle)', fontFamily: 'var(--mono)', fontWeight: dep.cves > 0 ? 700 : 400 }}>
-                    {dep.cves > 0 ? `${dep.cves} CVE` : '—'}
-                  </td>
-                  <td>
-                    <Badge variant={dep.risk === 'high' ? 'danger' : dep.risk === 'medium' ? 'warn' : 'muted'}>{dep.risk}</Badge>
-                  </td>
-                  <td style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--subtle)' }}>
-                    {dep.usedIn.join(', ')}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
+            <div>
+              <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--subtle)', marginBottom: 6 }}>Description</p>
+              <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>{selected.description}</p>
+            </div>
 
-      {tab === 'checklist' && (
-        <Card title="Security Checklist">
-          <div className="stack" style={{ gap: 8 }}>
-            {[
-              { label: 'SQL injection prevention', status: 'fail', note: 'Unparameterised query in orders.js' },
-              { label: 'Input validation on all endpoints', status: 'partial', note: 'Missing on /api/predictions' },
-              { label: 'Error details not exposed to client', status: 'fail', note: 'Raw SQLite errors returned' },
-              { label: 'Authentication on protected routes', status: 'review', note: 'No auth middleware detected' },
-              { label: 'HTTP security headers (helmet)', status: 'fail', note: 'Not configured' },
-              { label: 'Rate limiting', status: 'fail', note: 'No rate limiter found' },
-              { label: 'Secrets not in source code', status: 'pass', note: 'No hardcoded secrets found' },
-              { label: 'Dependencies: no known critical CVEs', status: 'pass', note: '0 critical CVEs in current scan' },
-              { label: 'File upload restrictions', status: 'pass', note: 'No file upload endpoints found' },
-            ].map((item, i) => (
-              <div key={i} className="spread" style={{ padding: '10px 14px', borderRadius: 10, background: 'var(--panel-sunken)', border: '1px solid var(--line)' }}>
-                <div className="row" style={{ gap: 10 }}>
-                  <ChecklistDot status={item.status} />
-                  <span style={{ fontSize: 13, color: 'var(--ink)' }}>{item.label}</span>
-                </div>
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>{item.note}</span>
-              </div>
-            ))}
+            <div>
+              <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--subtle)', marginBottom: 6 }}>Evidence</p>
+              <pre className="code" style={{ fontSize: 11 }}>{selected.evidence}</pre>
+            </div>
+
+            <div>
+              <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--subtle)', marginBottom: 6 }}>Recommendation</p>
+              <p style={{ fontSize: 13, color: 'var(--ink)', lineHeight: 1.6 }}>{selected.recommendation}</p>
+            </div>
+
+            <div style={{ display: 'flex', gap: 6 }}>
+              <span className="chip" style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>{selected.file}:{selected.line}</span>
+            </div>
+
+            <div className="alert alert-info" style={{ fontSize: 12 }}>
+              This is a static analysis finding. Verify manually before remediating in production.
+            </div>
           </div>
-        </Card>
-      )}
+        )}
+      </div>
     </div>
-  );
-}
-
-function StatusPill({ status }: { status: IssueStatus }) {
-  const map: Record<IssueStatus, { label: string; color: string; bg: string }> = {
-    confirmed: { label: 'Confirmed', color: 'var(--danger)', bg: 'var(--danger-soft)' },
-    potential: { label: 'Potential', color: 'var(--warn)', bg: 'var(--warn-soft)' },
-    review: { label: 'Needs review', color: 'var(--info)', bg: 'var(--info-soft)' },
-  };
-  const v = map[status];
-  return (
-    <span style={{ padding: '3px 9px', borderRadius: 999, fontSize: 11, fontWeight: 700, fontFamily: 'var(--mono)', background: v.bg, color: v.color }}>
-      {v.label}
-    </span>
-  );
-}
-
-function ChecklistDot({ status }: { status: string }) {
-  const map: Record<string, { symbol: string; color: string }> = {
-    pass: { symbol: '✓', color: 'var(--accent)' },
-    fail: { symbol: '✗', color: 'var(--danger)' },
-    partial: { symbol: '~', color: 'var(--warn)' },
-    review: { symbol: '?', color: 'var(--info)' },
-  };
-  const v = map[status] ?? map.review;
-  return (
-    <span style={{ display: 'inline-grid', placeItems: 'center', width: 20, height: 20, borderRadius: 999, background: v.color + '22', color: v.color, fontSize: 11, fontWeight: 700, flex: 'none' }}>
-      {v.symbol}
-    </span>
   );
 }

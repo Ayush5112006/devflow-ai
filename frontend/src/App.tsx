@@ -21,15 +21,17 @@ import { IncidentsPage } from './pages/IncidentsPage.js';
 import { KnowledgePage } from './pages/KnowledgePage.js';
 import { AnalyticsPage } from './pages/AnalyticsPage.js';
 import { JudgeModePage } from './pages/JudgeModePage.js';
+import { IntegrationsPage } from './pages/IntegrationsPage.js';
+import { DependenciesPage } from './pages/DependenciesPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
 import { CommandPalette } from './components/CommandPalette.js';
 
 const NAV_SECTIONS = [
   {
-    label: 'Overview',
+    label: 'Workspace',
     items: [
-      { to: '/', icon: '⊞', label: 'Dashboard', exact: true },
+      { to: '/', icon: '▦', label: 'Dashboard', exact: true },
       { to: '/projects', icon: '◫', label: 'Projects' },
       { to: '/analytics', icon: '◉', label: 'Analytics' },
     ],
@@ -46,32 +48,34 @@ const NAV_SECTIONS = [
   {
     label: 'Code',
     items: [
-      { to: '/code-intelligence', icon: '⌥', label: 'Code Intelligence' },
-      { to: '/code-review', icon: '◑', label: 'Code Review' },
+      { to: '/code-intelligence', icon: '◑', label: 'Code Intelligence' },
+      { to: '/code-review', icon: '◧', label: 'Code Review' },
       { to: '/security', icon: '◻', label: 'Security' },
       { to: '/test-center', icon: '✓', label: 'Tests' },
+      { to: '/dependencies', icon: '◈', label: 'Dependencies' },
     ],
   },
   {
-    label: 'Release',
+    label: 'Delivery',
     items: [
       { to: '/git', icon: '⑂', label: 'Git' },
       { to: '/pull-requests', icon: '⊕', label: 'Pull Requests' },
-      { to: '/releases', icon: '◈', label: 'Releases' },
+      { to: '/releases', icon: '◬', label: 'Releases' },
     ],
   },
   {
     label: 'Knowledge',
     items: [
-      { to: '/knowledge', icon: '◧', label: 'Knowledge Base' },
-      { to: '/reports', icon: '▤', label: 'Reports' },
+      { to: '/knowledge', icon: '▤', label: 'Knowledge Base' },
+      { to: '/reports', icon: '⊞', label: 'Reports' },
     ],
   },
   {
     label: 'System',
     items: [
-      { to: '/judge', icon: '◬', label: 'Judge Mode' },
-      { to: '/metrics', icon: '▦', label: 'Metrics' },
+      { to: '/integrations', icon: '⌥', label: 'Integrations' },
+      { to: '/judge', icon: '◎', label: 'Judge Mode' },
+      { to: '/metrics', icon: '◐', label: 'Metrics' },
       { to: '/settings', icon: '⚙', label: 'Settings' },
     ],
   },
@@ -85,10 +89,10 @@ const PAGE_TITLES: Record<string, string> = {
   '/investigations': 'Investigations',
   '/new': 'New Investigation',
   '/incidents': 'Incidents',
-  '/debugging': 'Debugging',
+  '/debugging': 'Log Intelligence',
   '/code-intelligence': 'Code Intelligence',
   '/code-review': 'Code Review',
-  '/security': 'Security',
+  '/security': 'Security Review',
   '/test-center': 'Test Center',
   '/git': 'Git Center',
   '/pull-requests': 'Pull Requests',
@@ -98,6 +102,8 @@ const PAGE_TITLES: Record<string, string> = {
   '/metrics': 'Metrics',
   '/judge': 'Judge Mode',
   '/settings': 'Settings',
+  '/integrations': 'Integrations',
+  '/dependencies': 'Dependencies',
 };
 
 function getPageTitle(pathname: string): string {
@@ -239,6 +245,8 @@ export function App() {
               <Route path="/metrics" element={<MetricsPage />} />
               <Route path="/judge" element={<JudgeModePage />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/integrations" element={<IntegrationsPage />} />
+              <Route path="/dependencies" element={<DependenciesPage />} />
               <Route
                 path="*"
                 element={
