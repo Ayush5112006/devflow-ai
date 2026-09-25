@@ -50,13 +50,31 @@ export const api = {
   approve: (id: string, approvedBy: string, note: string) =>
     post<{ approval: Investigation['approval'] }>(`/investigations/${id}/approve`, { approvedBy, note }),
   implement: (id: string) => post<{ started: boolean }>(`/investigations/${id}/implement`),
+  replan: (id: string, feedback: string) =>
+    post<{ ok: boolean }>(`/investigations/${id}/replan`, { feedback }),
 
   /* Getters */
   findings: (id: string) => get<{ findings: Investigation['findings'] }>(`/investigations/${id}/findings`),
   rootCause: (id: string) => get<{ rootCause: Investigation['rootCause'] }>(`/investigations/${id}/root-cause`),
   changePlan: (id: string) => get<{ changePlan: Investigation['changePlan'] }>(`/investigations/${id}/change-plan`),
   report: (id: string) => get<{ report: Investigation['report']; metrics: Investigation['metrics'] }>(`/investigations/${id}/report`),
+  git: (id: string) => get<{ git: GitInfo }>(`/investigations/${id}/git`),
+
+  /* System health */
+  health: () => get<{ status: string; version: string; uptime: number }>('/health').catch(() => null),
 
   /* SSE */
   stream: (id: string) => new EventSource(`/api/investigations/${id}/stream`),
 };
+
+export interface GitInfo {
+  available: boolean;
+  branch: string | null;
+  latestCommit: string | null;
+  latestMessage: string | null;
+  latestAuthor: string | null;
+  latestDate: string | null;
+  modifiedFiles: string[];
+  recentCommits: { hash: string; message: string; author: string; date: string }[];
+  suggestedBranch: string | null;
+}

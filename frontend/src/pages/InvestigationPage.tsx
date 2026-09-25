@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useInvestigation } from '../hooks/useInvestigation.js';
 import { api } from '../services/api.js';
+import type { GitInfo } from '../services/api.js';
 import { Card } from '../components/Card.js';
 import { Badge, severityBadge, statusBadge } from '../components/Badge.js';
 import { LoadingSpinner } from '../components/LoadingSpinner.js';
 import { PipelineDiagram } from '../components/PipelineDiagram.js';
 import { ActivityLog } from '../components/ActivityLog.js';
 import { StageStepper, STAGE_ORDER, STAGE_LABEL, stageTone } from '../components/StageStepper.js';
+import { InvestigationTimeline } from '../components/InvestigationTimeline.js';
+import { useToast } from '../components/ToastProvider.js';
 import type { ActivityEntry, AgentRun, Evidence, Finding, Hypothesis, Investigation, StageId } from '../types/index.js';
 
 /**
@@ -41,6 +44,7 @@ const TABS: { id: string; label: string; stage: StageId }[] = [
   { id: 'verification', label: 'Verification', stage: 'verification' },
   { id: 'regression', label: 'Regression', stage: 'regression' },
   { id: 'report', label: 'Report', stage: 'report' },
+  { id: 'timeline', label: 'Timeline', stage: 'projectAnalysis' },
 ];
 
 /** Tabs stay present even before data exists, so the structure does not shift. */
@@ -52,6 +56,7 @@ function tabAvailable(id: string, inv: Investigation): boolean {
     case 'verification': return !!inv.verification;
     case 'regression': return !!inv.regression;
     case 'report': return !!inv.report;
+    case 'timeline': return inv.activity.length > 0;
     default: return true;
   }
 }
@@ -72,6 +77,47 @@ export function InvestigationPage() {
   const [approving, setApproving] = useState(false);
   const [implementing, setImplementing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [gitInfo, setGitInfo] = useState<GitInfo | null>(null);
+  const toast = useToast();
+
+  // Previous status ref for notification diffing
+  const prevStatusRef = useRef<string | null>(null);
+
+  // Fetch git info when investigation is available
+  useEffect(() => {
+    if (!id || !inv) return;
+    api.git(id).then(({ git }) => setGitInfo(git)).catch(() => setGitInfo(null));
+  }, [id, inv?.status]);
+
+  // Fire toasts on status transitions
+  useEffect(() => {
+    if (!inv) return;
+    const prev = prevStatusRef.current;
+    const curr = inv.status;
+    if (prev !== null && prev !== curr) {
+      if (curr === 'awaiting_approval') {
+        toast.push({ level: 'warn', title: '⏸ Approval required', message: 'Review the change plan and approve to continue.' });
+      } else if (curr === 'completed') {
+        toast.push({ level: 'success', title: '✓ Investigation complete', message: 'Tests passed and report is ready.' });
+      } else if (curr === 'failed') {
+        toast.push({ level: 'error', title: '✕ Investigation failed', message: inv.errors[0]?.message });
+      }
+    }
+    prevStatusRef.current = curr;
+  }, [inv?.status]);
+
+  // Fire toast when root cause is identified
+  const hadRootCause = useRef(false);
+  useEffect(() => {
+    if (inv?.rootCause && !hadRootCause.current) {
+      hadRootCause.current = true;
+      toast.push({
+        level: 'info',
+        title: 'Root cause identified',
+        message: inv.rootCause.statement.slice(0, 100),
+      });
+    }
+  }, [inv?.rootCause]);
 
   if (loading) return <LoadingSpinner message="Loading investigation…" />;
   if (error) return <div className="alert" role="alert">{error}</div>;
@@ -250,7 +296,14 @@ export function InvestigationPage() {
           {activeTab === 'implementation' && <ImplementationTab inv={inv} />}
           {activeTab === 'verification' && <VerificationTab inv={inv} />}
           {activeTab === 'regression' && <RegressionTab inv={inv} />}
-          {activeTab === 'report' && <ReportTab inv={inv} />}
+          {activeTab === 'report' && <ReportTab inv={inv} gitInfo={gitInfo} />}
+          {activeTab === 'timeline' && (
+            <div className="stack">
+              <Card title="Investigation timeline">
+                <InvestigationTimeline entries={activity} />
+              </Card>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -855,6 +908,27 @@ function ChangePlanTab({
 }) {
   const plan = inv.changePlan;
   const [note, setNote] = useState('');
+  const [replanFeedback, setReplanFeedback] = useState('');
+  const [replanning, setReplanning] = useState(false);
+  const [replanError, setReplanError] = useState<string | null>(null);
+  const [showReplan, setShowReplan] = useState(false);
+  const toast = useToast();
+
+  async function submitReplan() {
+    if (!inv.id || !replanFeedback.trim()) return;
+    setReplanning(true);
+    setReplanError(null);
+    try {
+      await api.replan(inv.id, replanFeedback.trim());
+      setShowReplan(false);
+      setReplanFeedback('');
+      toast.push({ level: 'info', title: 'Plan regenerated', message: 'Review the updated change plan.' });
+    } catch (e) {
+      setReplanError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReplanning(false);
+    }
+  }
 
   if (!plan) return <Pending what="Change plan" hint="A plan is generated once a root cause is confirmed." />;
 
@@ -981,11 +1055,49 @@ function ChangePlanTab({
               />
             </label>
             <div className="row" style={{ gap: 10 }}>
-              <button className="btn btn-sm" onClick={() => {/* reject: stay on page */}}>
-                ✕ Reject plan
+              <button className="btn btn-sm" onClick={() => setShowReplan((s) => !s)}>
+                ⟳ Request changes
               </button>
               <button className="btn btn-warn btn-lg" onClick={() => onApprove(note)} disabled={approving}>
                 {approving ? 'Approving…' : '✓ Approve fix plan'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Request Changes panel */}
+      {showReplan && inv.status === 'awaiting_approval' && (
+        <div className="panel" style={{ borderColor: 'rgba(96,165,250,.3)' }}>
+          <div className="panel-head">
+            <p className="panel-title" style={{ margin: 0 }}>⟳ Request plan changes</p>
+          </div>
+          <div className="panel-body stack">
+            <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>
+              Describe what should be different. The change plan will be regenerated based on your feedback.
+              The investigation does not restart — only the plan is rebuilt.
+            </p>
+            <label className="field">
+              <span className="field-label">Feedback</span>
+              <textarea
+                className="textarea"
+                rows={3}
+                value={replanFeedback}
+                onChange={(e) => setReplanFeedback(e.target.value)}
+                placeholder='e.g. "Do not modify the API response. Update the frontend consumer instead."'
+              />
+            </label>
+            {replanError && (
+              <div className="alert"><span>{replanError}</span></div>
+            )}
+            <div className="row" style={{ gap: 10 }}>
+              <button className="btn btn-sm" onClick={() => setShowReplan(false)}>Cancel</button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={submitReplan}
+                disabled={replanning || !replanFeedback.trim()}
+              >
+                {replanning ? 'Regenerating…' : 'Regenerate plan'}
               </button>
             </div>
           </div>
@@ -1364,10 +1476,11 @@ function RegressionTab({ inv }: { inv: Investigation }) {
 /* Report Tab                                                          */
 /* ------------------------------------------------------------------ */
 
-function ReportTab({ inv }: { inv: Investigation }) {
+function ReportTab({ inv, gitInfo }: { inv: Investigation; gitInfo: GitInfo | null }) {
   const report = inv.report;
   const metrics = inv.metrics;
   const [copied, setCopied] = useState<'report' | 'pr' | null>(null);
+  const [copiedCommit, setCopiedCommit] = useState(false);
 
   if (!report) return <Pending what="Engineering report" hint="The report is written once the workflow completes." />;
 
@@ -1443,6 +1556,129 @@ function ReportTab({ inv }: { inv: Investigation }) {
                 <li key={i} className="subtle" style={{ fontSize: 12 }}>{n}</li>
               ))}
             </ul>
+          )}
+        </Card>
+      )}
+
+      {/* Productivity Scorecard */}
+      {metrics && (
+        <Card title="Developer productivity scorecard">
+          <div className="scorecard-grid">
+            {[
+              { label: 'Investigation time', value: duration(metrics.investigationDurationMs), icon: '⏱', sub: 'parallel agents' },
+              { label: 'Manual steps avoided', value: `${metrics.manualStepsAutomated}`, icon: '🤖', sub: `of ${metrics.manualSteps + metrics.manualStepsAutomated} total` },
+              { label: 'Files auto-inspected', value: `${metrics.filesInspected}`, icon: '🔍', sub: 'without manual search' },
+              { label: 'Parallel tasks', value: `${metrics.agentsUsed}`, icon: '⚡', sub: 'concurrent agents' },
+              { label: 'Root cause confidence', value: `${Math.round((inv.rootCause?.confidence ?? 0) * 100)}%`, icon: '🎯', sub: 'evidence-backed' },
+              { label: 'Files modified', value: `${metrics.filesModified}`, icon: '✏️', sub: 'minimal patch' },
+              { label: 'Tests executed', value: `${metrics.testsExecuted}`, icon: '✓', sub: `${metrics.testsPassed} passed` },
+              { label: 'Rework cycles', value: `${metrics.reworkCycles ?? 0}`, icon: '🔄', sub: 'avoided' },
+            ].map((item) => (
+              <div key={item.label} className="scorecard-item">
+                <span className="scorecard-icon" aria-hidden="true">{item.icon}</span>
+                <p className="scorecard-value">{item.value}</p>
+                <p className="scorecard-label">{item.label}</p>
+                {item.sub && <p className="scorecard-sub">{item.sub}</p>}
+              </div>
+            ))}
+          </div>
+          {metrics.comparison && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+              <p className="panel-title" style={{ marginBottom: 10 }}>Time saved vs traditional workflow</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--subtle)', textTransform: 'uppercase', letterSpacing: '.07em' }}>Traditional</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 700, color: 'var(--muted)' }}>{metrics.comparison.baseline.totalMinutes}m</p>
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--subtle)' }}>{metrics.comparison.baseline.manualSteps} manual steps (est.)</p>
+                </div>
+                <span style={{ color: 'var(--accent)', fontSize: 18, fontWeight: 700 }}>→</span>
+                <div>
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--subtle)', textTransform: 'uppercase', letterSpacing: '.07em' }}>FixFlow AI</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>{duration(metrics.totalWorkflowDurationMs)}</p>
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--subtle)' }}>{metrics.comparison.fixflow.manualSteps} manual step (measured)</p>
+                </div>
+                <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--subtle)', textTransform: 'uppercase', letterSpacing: '.07em' }}>Time saved</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>
+                    ~{metrics.comparison.baseline.totalMinutes}m
+                  </p>
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--subtle)' }}>baseline is an estimate</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Git information */}
+      {gitInfo && (
+        <Card title="Git information">
+          {gitInfo.available ? (
+            <div className="stack">
+              <dl className="kv">
+                <dt>Branch</dt>
+                <dd className="mono">{gitInfo.branch ?? '—'}</dd>
+                <dt>Latest commit</dt>
+                <dd className="mono">{gitInfo.latestCommit ?? '—'}</dd>
+                <dt>Message</dt>
+                <dd>{gitInfo.latestMessage ?? '—'}</dd>
+                <dt>Author</dt>
+                <dd>{gitInfo.latestAuthor ?? '—'}</dd>
+                {gitInfo.modifiedFiles.length > 0 && (
+                  <>
+                    <dt>Modified files</dt>
+                    <dd>
+                      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                        {gitInfo.modifiedFiles.slice(0, 8).map((f) => (
+                          <span key={f} className="chip mono">{f}</span>
+                        ))}
+                        {gitInfo.modifiedFiles.length > 8 && (
+                          <span className="chip">+{gitInfo.modifiedFiles.length - 8}</span>
+                        )}
+                      </div>
+                    </dd>
+                  </>
+                )}
+              </dl>
+              {gitInfo.suggestedBranch && (
+                <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+                  <p className="panel-title" style={{ marginBottom: 8 }}>Suggested fix branch</p>
+                  <div className="row" style={{ gap: 10 }}>
+                    <code className="mono" style={{ fontSize: 12, color: 'var(--accent)', background: 'var(--panel-sunken)', padding: '4px 10px', borderRadius: 6 }}>
+                      {gitInfo.suggestedBranch}
+                    </code>
+                    <button
+                      className="btn btn-sm"
+                      onClick={() => {
+                        navigator.clipboard.writeText(
+                          `git checkout -b ${gitInfo.suggestedBranch}`
+                        ).then(() => { setCopiedCommit(true); setTimeout(() => setCopiedCommit(false), 2000); }).catch(() => undefined);
+                      }}
+                    >
+                      {copiedCommit ? '✓ Copied' : '⎘ Copy checkout command'}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {gitInfo.recentCommits.length > 0 && (
+                <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+                  <p className="panel-title" style={{ marginBottom: 8 }}>Recent commits</p>
+                  <div className="stack-sm">
+                    {gitInfo.recentCommits.map((c) => (
+                      <div key={c.hash} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
+                        <span className="chip mono" style={{ fontSize: 10 }}>{c.hash}</span>
+                        <span style={{ fontSize: 12.5, color: 'var(--muted)', flex: 1 }}>{c.message}</span>
+                        <span className="subtle" style={{ fontSize: 11, flex: 'none' }}>{c.author}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+              Git not available in this workspace. The project may not be a git repository.
+            </p>
           )}
         </Card>
       )}
