@@ -124,7 +124,10 @@ export interface QueryRef {
   line: number;
   sql: string;
   tables: string[];
+  /** Every column the statement touches, regardless of table. */
   columns: string[];
+  /** Per-table attribution, so `f.customer` is not blamed on `predictions`. */
+  columnRefs: SqlColumnRef[];
 }
 
 export interface TestDef {
@@ -327,13 +330,37 @@ function collectImports(file: IndexedFile): ImportEdge[] {
   return out;
 }
 
-/** Finds the `{` that opens the argument of `sink(` at the call offset. */
+/**
+ * Finds the offset of the first object-literal argument of a response sink.
+ * Handles both `res.json(payload)` and `res.json(200, payload)`.
+ */
 function findPayloadObject(source: string, blanked: string, fromOffset: number): number | null {
   const open = blanked.indexOf('(', fromOffset);
   if (open === -1) return null;
-  let i = open + 1;
-  while (i < blanked.length && /\s/.test(blanked[i])) i += 1;
-  return blanked[i] === '{' ? i : null;
+  const close = matchParen(blanked, open);
+  const end = close === -1 ? blanked.length : close;
+
+  let depth = 0;
+  let argStart = open + 1;
+  for (let i = open + 1; i <= end; i += 1) {
+    const c = blanked[i];
+    if (c === '(' || c === '[' || c === '{') {
+      if (depth === 0 && c === '{') {
+        // First object literal at the top level of the argument list.
+        let k = i;
+        while (k < end && /\s/.test(blanked[k])) k += 1;
+        if (k === i) return i;
+      }
+      depth += 1;
+    } else if (c === ')' || c === ']' || c === '}') {
+      depth -= 1;
+    } else if (c === ',' && depth === 0) {
+      argStart = i + 1;
+    }
+  }
+  void source;
+  void argStart;
+  return null;
 }
 
 function collectRoutes(file: IndexedFile, fnRanges: FunctionRange[]): RouteDef[] {
@@ -358,11 +385,18 @@ function collectRoutes(file: IndexedFile, fnRanges: FunctionRange[]): RouteDef[]
       const afterArgs = m.index + m[0].length;
 
       // ---- locate the handler and its brace-matched body ------------------
-      const callOpen = file.blanked.indexOf('(', m.index);
+      const callOpen = file.code.indexOf('(', m.index);
       const callClose = callOpen === -1 ? -1 : matchParen(file.blanked, callOpen);
-      const tailStart = callClose === -1 ? afterArgs : callClose + 1;
-      const tail = file.blanked.slice(tailStart, tailStart + 300);
-      const inlineBody = /^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]*?)?=>|[A-Za-z_$][\w$]*\s*=>)\s*\{/.exec(tail);
+      const args = callOpen === -1 || callClose === -1
+        ? ''
+        : splitArguments(file.source, file.blanked, callOpen, callClose).rest;
+      const tail = callClose === -1
+        ? file.code.slice(afterArgs, afterArgs + 300)
+        : file.code.slice(callClose + 1, callClose + 301);
+      // Inline handlers live *inside* the call: `.get('/x', (req, res) => { ... })`
+      const inlineInArgs = /^\s*,?\s*(?:async\s+)?(?:function\s*\([^)]*\)\s*\{|\([^)]*\)\s*(?::[^=]*?)?=>\s*\{|[A-Za-z_$][\w$]*\s*=>\s*\{)/.test(args);
+      const inlineAfter = /^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]*?)?=>|[A-Za-z_$][\w$]*\s*=>)\s*\{/.test(tail);
+      const namedInArgs = /^\s*,?\s*(?:async\s+)?(?:function\s+)?([A-Za-z_$][\w$]*)\s*$/.exec(args.trim());
       const named = /^\s*,?\s*(?:async\s+)?(?:function\s+)?([A-Za-z_$][\w$]*)\s*(?=[,)])/.exec(tail);
 
       let handler: string | null = null;
@@ -371,16 +405,17 @@ function collectRoutes(file: IndexedFile, fnRanges: FunctionRange[]): RouteDef[]
       let handlerStart = line;
       let handlerEnd = file.lines.length;
 
-      if (inlineBody) {
-        const brace = file.blanked.indexOf('{', tailStart);
+      if (inlineInArgs || inlineAfter) {
+        const searchFrom = inlineInArgs ? callOpen : afterArgs;
+        const brace = file.blanked.indexOf('{', searchFrom);
         if (brace !== -1) {
           bodyStartOffset = brace;
           bodyEndOffset = matchBrace(file.blanked, brace);
-          handler = named?.[1] ?? '(inline handler)';
+          handler = namedInArgs?.[1] ?? named?.[1] ?? '(inline handler)';
         }
-      } else if (named?.[1]) {
-        handler = named[1];
-        const range = fnRanges.find((r) => r.name === handler);
+      } else if (namedInArgs?.[1] || named?.[1]) {
+        handler = namedInArgs?.[1] ?? named?.[1] ?? null;
+        const range = handler ? fnRanges.find((r) => r.name === handler) : undefined;
         if (range) {
           bodyStartOffset = file.blanked.indexOf('{', range.startOffset);
           bodyEndOffset = range.endOffset;
@@ -399,22 +434,25 @@ function collectRoutes(file: IndexedFile, fnRanges: FunctionRange[]): RouteDef[]
       const bodyTo = bodyEndOffset === null || bodyEndOffset === -1 ? file.blanked.length : bodyEndOffset;
       const handlerBody = file.blanked.slice(bodyFrom, bodyTo);
 
-      // Response payload keys.
+      // Response payload keys, from every sink in the handler so that both the
+      // success and the error shape are represented.
       const responseKeys: ObjectKey[] = [];
-      let responseLiteralLine: number | null = null;
-      const sink = /\b(?:res|reply|response|ctx)\s*\.\s*(?:json|send|end|body)\s*\(/.exec(handlerBody)
-        ?? /\breturn\s*\{/.exec(handlerBody);
-      if (sink && bodyStartOffset !== null) {
-        const abs = bodyStartOffset + sink.index;
+      const responseLiteralLines: number[] = [];
+      const sinkRe = /\b(?:res|reply|response|ctx)\s*\.\s*(?:json|send|end|body)\s*\(|\breturn\s*\{/g;
+      let sink: RegExpExecArray | null;
+      while ((sink = sinkRe.exec(handlerBody)) !== null) {
+        const abs = bodyFrom + sink.index;
         const payload = findPayloadObject(file.source, file.blanked, abs);
-        if (payload !== null) {
-          const keys = objectKeys(file.source, file.blanked, payload);
-          if (keys.length > 0) {
-            responseKeys.push(...keys);
-            responseLiteralLine = keys[0]?.line ?? lineAt(file.source, payload);
-          }
+        if (payload === null) continue;
+        const keys = objectKeys(file.source, file.blanked, payload);
+        if (keys.length === 0) continue;
+        for (const k of keys) {
+          if (k.name.startsWith('...')) continue;
+          if (!responseKeys.some((existing) => existing.name === k.name)) responseKeys.push(k);
         }
+        responseLiteralLines.push(keys[0].line);
       }
+      const responseLiteralLine = responseLiteralLines[0] ?? null;
 
       const envRefs = collectEnvRefs(file).filter(
         (r) => r.line >= handlerStart && r.line <= handlerEnd,
@@ -568,7 +606,7 @@ function collectClientCalls(
       const argEnd = argStart === -1 ? -1 : matchParen(file.blanked, argStart);
       const urlExpression = argEnd === -1 || argStart === -1
         ? (file.lines[line - 1] ?? '').trim()
-        : file.source.slice(argStart + 1, argEnd);
+        : firstArgument(file.source, file.blanked, argStart, argEnd);
       const method = m[1] ? m[1].toUpperCase() : 'GET';
       const resolved = resolveUrlArgument(urlExpression, helpers);
 
@@ -616,7 +654,8 @@ function collectUrlHelpers(files: Map<string, IndexedFile>): Map<string, { templ
       let m: RegExpExecArray | null;
       while ((m = re.exec(file.source)) !== null) {
         const name = m[1];
-        const template = m[2].slice(1, -1);
+        // Keep the quotes: the resolver re-reads this as a literal.
+        const template = m[2];
         if (!name || out.has(name)) continue;
         out.set(name, { template, file: file.rel, line: lineAt(file.source, m.index) });
       }
@@ -629,6 +668,40 @@ interface ResolvedUrl {
   url: string | null;
   source: 'literal' | 'helper' | 'template-base' | 'unknown';
   helper: string | null;
+}
+
+/**
+ * Returns the text of a call's first argument, ignoring commas that belong to
+ * later arguments or to nested structures. Offsets are taken from the string
+ * blanked view so commas inside literals are not counted.
+ */
+export function firstArgument(
+  source: string,
+  blanked: string,
+  openParen: number,
+  closeParen: number,
+): string {
+  return splitArguments(source, blanked, openParen, closeParen).first;
+}
+
+/** Splits a call into its first argument and the remaining argument text. */
+export function splitArguments(
+  source: string,
+  blanked: string,
+  openParen: number,
+  closeParen: number,
+): { first: string; rest: string } {
+  const from = openParen + 1;
+  let depth = 0;
+  for (let i = from; i < closeParen; i += 1) {
+    const c = blanked[i];
+    if (c === '(' || c === '[' || c === '{') depth += 1;
+    else if (c === ')' || c === ']' || c === '}') depth -= 1;
+    else if (c === ',' && depth === 0) {
+      return { first: source.slice(from, i), rest: source.slice(i + 1, closeParen) };
+    }
+  }
+  return { first: source.slice(from, closeParen), rest: '' };
 }
 
 /** Turns a fetch argument into a comparable static path, if one is derivable. */
@@ -647,7 +720,7 @@ function resolveUrlArgument(expr: string, helpers?: Map<string, { template: stri
     };
   }
 
-  // 2. A call to a local URL builder.
+  // 2. A call to a local URL builder, e.g. `predictionsUrl(id)`.
   const call = /^([A-Za-z_$][\w$]*)\s*\(/.exec(text);
   if (call?.[1] && helpers?.has(call[1]) && depth < 3) {
     const helper = helpers.get(call[1]);
@@ -655,6 +728,12 @@ function resolveUrlArgument(expr: string, helpers?: Map<string, { template: stri
       const inner = resolveUrlArgument(helper.template, helpers, depth + 1);
       return { url: inner.url, source: 'helper', helper: `${call[1]}@${helper.file}:${helper.line}` };
     }
+  }
+
+  // 3. A bare path string with no quotes, e.g. `/api/x/${id}`.
+  if (text.startsWith('/')) {
+    const staticPath = normaliseUrlTemplate(text);
+    return { url: staticPath || null, source: 'literal', helper: null };
   }
 
   return { url: null, source: 'unknown', helper: call?.[1] ?? null };
@@ -714,6 +793,7 @@ function collectSqlArtifacts(file: IndexedFile): { tables: TableDef[]; queries: 
       sql: sql.slice(0, 400),
       tables: extractTables(sql),
       columns: extractColumns(sql),
+      columnRefs: extractColumnRefs(sql),
     });
   }
 
@@ -728,35 +808,175 @@ export function extractTables(sql: string): string[] {
   return [...new Set(out)];
 }
 
-export function extractColumns(sql: string): string[] {
-  const out = new Set<string>();
-  // projection list: SELECT a, b AS c FROM
-  const proj = /SELECT\s+(?:DISTINCT\s+)?([\s\S]*?)\s+FROM\s/i.exec(sql);
-  if (proj) {
-    for (const part of proj[1].split(',')) {
-      const t = part.trim();
-      if (!t || t === '*') continue;
-      const alias = /\s+AS\s+["'`]?(\w+)["'`]?$/i.exec(t);
-      const dot = /["'`]?(\w+)["'`]?\.\s*["'`]?(\w+)["'`]?$/.exec(t);
-      if (alias) out.add(alias[1]);
-      else if (dot) out.add(dot[2]);
-      else if (/^\w+$/.test(t)) out.add(t);
+/* ------------------------------------------------------------------ */
+/* SQL column resolution                                               */
+/* ------------------------------------------------------------------ */
+
+/** A column reference, attributed to a table when the query allows it. */
+export interface SqlColumnRef {
+  column: string;
+  /** Resolved through the query's alias table, or null when ambiguous. */
+  table: string | null;
+  /** How the reference was written, for human-readable findings. */
+  written: string;
+}
+
+const SQL_NON_ALIAS = new Set([
+  'ON', 'USING', 'WHERE', 'GROUP', 'ORDER', 'LIMIT', 'OFFSET', 'HAVING', 'JOIN', 'LEFT',
+  'RIGHT', 'INNER', 'OUTER', 'FULL', 'CROSS', 'SET', 'VALUES', 'RETURNING', 'AND', 'OR',
+  'NOT', 'AS', 'UNION', 'SELECT', 'FROM', 'INSERT', 'UPDATE', 'DELETE', 'INTO',
+]);
+
+const SQL_STOPWORDS_IN_EXPR = new Set([
+  'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'IFNULL', 'NULLIF', 'CAST', 'ABS',
+  'ROUND', 'LENGTH', 'LOWER', 'UPPER', 'SUBSTR', 'DISTINCT', 'ALL', 'CASE', 'WHEN',
+  'THEN', 'ELSE', 'END', 'NULL', 'TRUE', 'FALSE', 'LIKE', 'IN', 'IS', 'BETWEEN',
+  'CURRENT_TIMESTAMP', 'DATETIME', 'NOW', 'GROUP_CONCAT', 'TOTAL',
+  'ASC', 'DESC', 'NULLS', 'FIRST', 'LAST', 'AND', 'OR', 'NOT', 'EXISTS',
+]);
+
+/** Splits a comma separated SQL list, ignoring commas inside parentheses. */
+function splitSqlList(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of list) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) out.push(current);
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+/** Builds `alias -> table` from FROM/JOIN/UPDATE/INTO clauses. */
+function sqlAliasMap(sql: string): { map: Map<string, string>; tables: string[] } {
+  const map = new Map<string, string>();
+  const tables: string[] = [];
+  const re = /\b(?:FROM|JOIN|UPDATE|INTO)\s+["'`]?(\w+)["'`]?(?:\s+(?:AS\s+)?(\w+))?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) {
+    const table = m[1];
+    tables.push(table);
+    map.set(table.toLowerCase(), table);
+    const maybeAlias = m[2];
+    if (maybeAlias && !SQL_NON_ALIAS.has(maybeAlias.toUpperCase())) {
+      map.set(maybeAlias.toLowerCase(), table);
     }
   }
-  // SET clause: UPDATE t SET a = ?, b = ?
-  const set = /\bSET\s+([\s\S]*?)(?:\bWHERE\b|$)/i.exec(sql);
+  return { map, tables: [...new Set(tables)] };
+}
+
+/**
+ * Resolves the columns a statement actually reads or writes.
+ *
+ * Correctly ignores output aliases (`... AS total`), `*`, aggregate results and
+ * keywords, and attributes `alias.column` to the table the alias stands for.
+ * This is what keeps the Database Investigation Agent from inventing
+ * mismatches such as "`orders` has no column `total`".
+ */
+export function extractColumnRefs(sql: string): SqlColumnRef[] {
+  const { map, tables } = sqlAliasMap(sql);
+  const only = tables.length === 1 ? tables[0] : null;
+  const refs: SqlColumnRef[] = [];
+  const seen = new Set<string>();
+  const add = (column: string, table: string | null, written: string) => {
+    if (!column || /^\d+$/.test(column)) return;
+    const key = `${table ?? '?'}.${column.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push({ column, table, written });
+  };
+
+  const scan = (expr: string, allowBare: boolean) => {
+    // Qualified references: `p.id`, `orders.amount`
+    for (const m of expr.matchAll(/(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Za-z_]\w*)/g)) {
+      const qualifier = m[1];
+      const name = m[2];
+      const end = (m.index ?? 0) + m[0].length;
+      const after = expr.slice(end);
+      const before = expr.slice(0, m.index ?? 0);
+      if (qualifier) {
+        if (after.trimStart().startsWith('(')) continue; // `schema.func(`
+        add(name, map.get(qualifier.toLowerCase()) ?? null, m[0]);
+        continue;
+      }
+      // A bare word: a column, a function name, a keyword or an alias.
+      if (before.trimEnd().endsWith('.')) continue;
+      if (/^\s*\(/.test(after)) continue;              // function call
+      if (!allowBare) continue;
+      if (SQL_STOPWORDS_IN_EXPR.has(name.toUpperCase())) continue;
+      if (SQL_NON_ALIAS.has(name.toUpperCase())) continue;
+      add(name, only, name);
+    }
+  };
+
+  // 1. SELECT projection list.
+  const select = /\bSELECT\s+(?:DISTINCT\s+)?([\s\S]*?)\s+FROM\b/i.exec(sql);
+  if (select) {
+    for (const rawItem of splitSqlList(select[1])) {
+      // Drop the output alias so it is never treated as a column.
+      const item = rawItem
+        .replace(/\s+AS\s+["'`]?\w+["'`]?\s*$/i, '')
+        .replace(/\s+["'`]?\w+["'`]?\s*$/i, (m2, off: number) => (
+          // Only strip a trailing bare alias, never a trailing function call.
+          rawItem.slice(off).includes('(') ? m2 : ''
+        ))
+        .trim();
+      if (!item || item === '*' || /^\*[\s,]/i.test(item)) continue;
+      scan(item, true);
+    }
+  }
+
+  // 2. UPDATE ... SET a = ?, b = ?
+  const set = /\bSET\s+([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|$)/i.exec(sql);
   if (set) {
-    for (const part of set[1].split(',')) {
-      const m = /^\s*["'`]?(\w+)["'`]?\s*=/.exec(part);
-      if (m) out.add(m[1]);
+    for (const part of splitSqlList(set[1])) {
+      const m = /^\s*([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*=/.exec(part) ?? /^\s*([A-Za-z_]\w*)\s*=/.exec(part);
+      if (!m) continue;
+      if (m[2]) add(m[2], map.get(m[1].toLowerCase()) ?? null, `${m[1]}.${m[2]}`);
+      else add(m[1], only, m[1]);
     }
   }
-  // WHERE equality
-  const where = /\bWHERE\s+([\s\S]*?)$/i.exec(sql);
-  if (where) {
-    for (const m of where[1].matchAll(/["'`]?(\w+)["'`]?\s*=/g)) out.add(m[1]);
+
+  // 3. INSERT INTO t (a, b) VALUES (?, ?)
+  const insertCols = /\bINTO\s+\w+\s*\(([^)]*)\)/i.exec(sql);
+  if (insertCols) {
+    for (const part of splitSqlList(insertCols[1])) {
+      const m = /^["'`]?(\w+)["'`]?$/.exec(part.trim());
+      if (m) add(m[1], only, m[1]);
+    }
   }
-  return [...out];
+
+  // 4. WHERE / GROUP BY / ORDER BY / HAVING / ON predicates.
+  const clauses = /\b(?:WHERE|HAVING|GROUP\s+BY|ORDER\s+BY|ON)\s+([\s\S]*?)(?=\b(?:WHERE|HAVING|GROUP\s+BY|ORDER\s+BY|ON|LIMIT|OFFSET|RETURNING|VALUES|SET)\b|$)/gi;
+  let cm: RegExpExecArray | null;
+  while ((cm = clauses.exec(sql)) !== null) scan(cm[1], true);
+
+  return refs;
+}
+
+export function extractColumns(sql: string): string[] {
+  return [...new Set(extractColumnRefs(sql).map((r) => r.column))];
+}
+
+/**
+ * Resolves a table alias used in a query back to the real table name, so a
+ * runtime error such as `no such column: o.customer_name` can be attributed to
+ * `orders` even though the error names the alias.
+ */
+export function resolveTableAlias(index: { queries: QueryRef[] }, alias: string): string | null {
+  const re = new RegExp(`\\b(?:FROM|JOIN)\\s+(\\w+)\\s+(?:AS\\s+)?${alias}\\b`, 'i');
+  for (const q of index.queries) {
+    const m = re.exec(q.sql);
+    if (m?.[1]) return m[1];
+  }
+  return null;
 }
 
 function collectModels(file: IndexedFile): ModelDef[] {

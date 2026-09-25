@@ -248,21 +248,43 @@ export function objectKeys(
         if (/^(async\s*)?(\(|function\b|[A-Za-z_$][\w$]*\s*=>)/.test(value)) kind = 'function';
       }
       keys.push({ name, line: lineAt(original, i), offset: i, kind, value });
-      i = j + 1;
+      // Skip the whole value so its identifiers are not mistaken for keys.
+      i = skipToNextMember(blanked, j + 1, bodyEnd);
       continue;
     }
 
     if (terminator === '(') {
       // Shorthand method: `foo() { ... }`
       keys.push({ name, line: lineAt(original, i), offset: i, kind: 'function', value: '' });
-      i = j + 1;
+      i = skipToNextMember(blanked, j + 1, bodyEnd);
       continue;
     }
 
-    i = afterKey;
+    // Shorthand property: `{ prediction }`
+    keys.push({ name, line: lineAt(original, i), offset: i, kind: 'scalar', value: name });
+    i = skipToNextMember(blanked, afterKey, bodyEnd);
   }
 
   return dedupeKeys(keys);
+}
+
+/**
+ * Advances to the next top-level member of an object literal, i.e. just past
+ * the comma that ends the current one. Nested structures are stepped over.
+ */
+function skipToNextMember(blanked: string, from: number, bodyEnd: number): number {
+  let depth = 0;
+  for (let i = from; i < bodyEnd; i += 1) {
+    const c = blanked[i];
+    if (c === '(' || c === '[' || c === '{') depth += 1;
+    else if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) return i;
+      depth -= 1;
+    } else if (c === ',' && depth === 0) {
+      return i;
+    }
+  }
+  return bodyEnd;
 }
 
 function dedupeKeys(keys: ObjectKey[]): ObjectKey[] {

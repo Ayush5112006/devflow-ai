@@ -139,14 +139,24 @@ export function findUndefinedInPaths(text: string): { path: string; line: number
   return out;
 }
 
-/** SQL / driver error text, e.g. `no such column: o.customer_name`. */
+/** Phrases that start a database/driver error message. */
+const DB_ERROR_TRIGGER = /\b(no such column|no such table|no such function|no such index|constraint failed|datatype mismatch|foreign key constraint failed|unique constraint failed|duplicate key value|permission denied|database is locked|column \S+ does not exist|table \S+ does not exist|ER_NO_SUCH_TABLE|ER_BAD_FIELD_ERROR|ER_DUP_ENTRY|SQLITE_ERROR|SQLITE_CONSTRAINT)\b/i;
+
+/**
+ * SQL / driver error text, e.g. `no such column: o.customer_name`.
+ * The detail after the trigger phrase is kept, because the column or table
+ * name the database complains about is what identifies the defect.
+ */
 export function findDatabaseErrors(text: string): { message: string; line: number; raw: string }[] {
   const out: { message: string; line: number; raw: string }[] = [];
-  const re = /\b(no such column|no such table|no such function|column \S+ does not exist|table \S+ does not exist|SQLITE_ERROR[^:\n]*:?[^\n]*|ER_NO_SUCH_TABLE[^\n]*|ER_BAD_FIELD_ERROR[^\n]*)\b/gi;
   for (const { line, raw } of splitLines(text)) {
-    const m = re.exec(raw);
-    if (m) out.push({ message: m[1].trim(), line, raw: raw.trim().slice(0, 300) });
-    re.lastIndex = 0;
+    const m = DB_ERROR_TRIGGER.exec(raw);
+    if (!m) continue;
+    const rest = raw.slice(m.index + m[0].length);
+    // The detail ends at the first structural delimiter of a log/JSON line.
+    const detail = rest.replace(/^[\s:=]+/, '').split(/["'`;,}\]]/)[0].trim().slice(0, 200);
+    const message = detail ? `${m[0]}: ${detail}` : m[0];
+    out.push({ message, line, raw: raw.trim().slice(0, 300) });
   }
   return out;
 }

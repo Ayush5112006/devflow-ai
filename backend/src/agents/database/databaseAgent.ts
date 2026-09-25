@@ -1,5 +1,5 @@
 ﻿import type { AgentContext, AgentDefinition, AgentResult } from '../types.js';
-import type { CodeIndex } from '../../analysis/codeIndex.js';
+import { nameSimilarity, resolveTableAlias, type CodeIndex } from '../../analysis/codeIndex.js';
 import { codeEvidence } from '../../analysis/evidenceParse.js';
 import { evidence, finding, signal } from '../types.js';
 import type { Evidence, Finding, Signal } from '../../types/index.js';
@@ -32,9 +32,22 @@ export const databaseAgent: AgentDefinition = {
 
     findings.push(...checkAgainstRuntimeErrors(ctx, index, signals));
 
-    return { findings, signals };
+    return { findings, signals: dedupeSignals(signals) };
   },
 };
+
+/** Collapses signals that say the same thing about the same subject. */
+function dedupeSignals(signals: Signal[]): Signal[] {
+  const seen = new Set<string>();
+  const out: Signal[] = [];
+  for (const s of signals) {
+    const key = `${s.kind}|${s.subject}|${s.statement}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out.sort((a, b) => b.weight - a.weight);
+}
 
 /** table → { column → declared in } */
 function collectDeclaredColumns(index: CodeIndex): Map<string, Map<string, { file: string; line: number }>> {
@@ -92,27 +105,36 @@ function checkQueries(
 
   for (const query of index.queries) {
     if (query.tables.length === 0) continue;
+    const frames = ctx.expectations.frames.filter((f) => f.file === query.file);
+
     for (const tableName of query.tables) {
       const columns = declared.get(tableName);
       if (!columns) continue;
 
-      const unknown = query.columns.filter((c) => !columns.has(c) && !/^\d+$/.test(c));
+      // Only blame a table for references that are actually attributed to it.
+      const refs = (query.columnRefs ?? []).filter((r) => r.table === tableName);
+      const unknown = refs
+        .map((r) => r.column)
+        .filter((c) => !columns.has(c) && !/^\d+$/.test(c) && !/^[?$:]\w*$/.test(c));
       if (unknown.length === 0) continue;
 
-      const isRuntimeConfirmed = ctx.expectations.databaseErrors.some((e) => e.column && unknown.includes(e.column));
-      const frames = ctx.expectations.frames.filter((f) => f.file === query.file);
+      const unique = [...new Set(unknown)];
+      const isRuntimeConfirmed = ctx.expectations.databaseErrors.some(
+        (e) => e.column && unique.includes(e.column),
+      );
       const inFailingFile = frames.length > 0;
 
-      let weight = 0.4;
+      let weight = 0.45;
       if (isRuntimeConfirmed) weight += 0.35;
       if (inFailingFile) weight += 0.15;
 
+      const schemaDecl = columns.values().next().value as { file: string; line: number } | undefined;
       const ev: Evidence[] = [
-        codeEvidence('database', columns.values().next().value?.file ?? query.file, columns.values().next().value?.line ?? 1,
+        codeEvidence('database', schemaDecl?.file ?? query.file, schemaDecl?.line ?? 1,
           `Table ${q(tableName)} declares: ${[...columns.keys()].join(', ')}`,
           `CREATE TABLE ${tableName} ( ${[...columns.keys()].join(', ')} )`),
         codeEvidence('database', query.file, query.line,
-          `Query selects ${query.columns.join(', ')} from ${q(tableName)}`,
+          `Query reads ${unique.join(', ')} from ${q(tableName)}`,
           query.sql),
       ];
       for (const frame of frames) {
@@ -125,34 +147,45 @@ function checkQueries(
         }));
       }
 
-      const statement = `Query on ${q(tableName)} selects ${unknown.join(', ')}, which the schema does not declare.`;
+      // Point at the closest declared column, which is what the query should use.
+      const near = unique
+        .map((c) => ({ requested: c, best: closestColumn(c, [...columns.keys()]) }))
+        .filter((n) => n.best && n.best.score >= 0.3);
+
+      const statement = `Query on ${q(tableName)} reads ${unique.map((c) => q(c)).join(', ')}, which the schema does not declare.`
+        + (near.length > 0
+          ? ` Closest declared column${near.length > 1 ? 's' : ''}: ${near.map((n) => `${n.requested} → ${q(n.best!.column)}`).join(', ')}.`
+          : '');
+
       signals.push(signal({
         kind: 'db-column-missing',
         statement,
-        subject: unknown[0],
+        subject: unique[0],
         source: 'database',
         weight: Math.min(0.97, weight),
         evidence: ev,
         detail: {
           table: tableName,
-          unknownColumns: unknown,
+          unknownColumns: unique,
           declaredColumns: [...columns.keys()],
+          likelyIntendedColumns: near.map((n) => n.best!.column),
           queryFile: query.file,
           queryLine: query.line,
           query: query.sql,
           runtimeConfirmed: isRuntimeConfirmed,
           stackCorroborated: inFailingFile,
-          schemaFile: columns.values().next().value?.file ?? null,
+          schemaFile: schemaDecl?.file ?? null,
         },
       }));
 
       findings.push(finding({
         agent: 'database',
-        title: `Query references columns that do not exist on ${q(tableName)}`,
-        summary: `${statement} Declared: ${[...columns.keys()].join(', ')}.`,
-        severity: 'high',
+        title: `Query on ${q(tableName)} uses columns the schema does not declare`,
+        summary: `${statement}\n\nDeclared on ${tableName}: ${[...columns.keys()].join(', ')}.`,
+        // An uncorroborated mismatch is a lead; a runtime-confirmed one is the bug.
+        severity: isRuntimeConfirmed ? 'high' : 'medium',
         confidence: Math.min(0.97, weight),
-        impact: `Every call that reaches this query fails with a database error and the endpoint returns HTTP 500.`,
+        impact: 'The statement fails at execution time, so every request that reaches it returns an error.',
         files: [query.file],
         functions: frames.map((f) => f.symbol),
         evidence: ev,
@@ -161,7 +194,29 @@ function checkQueries(
     }
   }
 
-  return findings;
+  return dedupeFindings(findings);
+}
+
+/** Finds the declared column name closest to an unknown one. */
+function closestColumn(requested: string, declared: string[]): { column: string; score: number } | null {
+  let best: { column: string; score: number } | null = null;
+  for (const column of declared) {
+    const { score } = nameSimilarity(requested, column);
+    if (!best || score > best.score) best = { column, score };
+  }
+  return best;
+}
+
+function dedupeFindings(findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  const out: Finding[] = [];
+  for (const f of findings) {
+    const key = `${f.title}|${f.summary}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
 }
 
 /** Compares the schema against columns the runtime said are missing. */
@@ -172,7 +227,11 @@ function checkAgainstRuntimeErrors(ctx: AgentContext, index: CodeIndex, signals:
 
   for (const dbErr of ctx.expectations.databaseErrors) {
     if (!dbErr.column) continue;
-    const tableName = dbErr.table ?? [...declared.keys()][0];
+    // The runtime names whatever the query wrote, which may be a table alias.
+    const named = dbErr.table;
+    const tableName = (named && declared.has(named) ? named : null)
+      ?? (named ? resolveTableAlias(index, named) : null)
+      ?? [...declared.keys()][0];
     const columns = declared.get(tableName);
     if (!columns) continue;
 
@@ -193,7 +252,7 @@ function checkAgainstRuntimeErrors(ctx: AgentContext, index: CodeIndex, signals:
     // Find the closest declared column name — this is what the query should use.
     const candidates = [...columns.keys()];
     const near = candidates
-      .map((c) => ({ c, sim: nameSimilarityLocal(dbErr.column as string, c) }))
+      .map((c) => ({ c, sim: nameSimilarity(dbErr.column as string, c).score }))
       .sort((a, b) => b.sim - a.sim)
       .slice(0, 3);
 
@@ -253,28 +312,6 @@ function checkAgainstRuntimeErrors(ctx: AgentContext, index: CodeIndex, signals:
     }));
   }
 
-  return findings;
+  return dedupeFindings(findings);
 }
-
-/** Local copy to avoid a circular import with the analysis module. */
-function nameSimilarityLocal(a: string, b: string): number {
-  const na = a.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  const nb = b.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  if (na === nb) return 1;
-  const tokensA = new Set(na.split('_').filter(Boolean));
-  const tokensB = new Set(nb.split('_').filter(Boolean));
-  const overlap = [...tokensA].filter((t) => tokensB.has(t)).length;
-  if (overlap > 0) return 0.4 + 0.4 * (overlap / new Set([...tokensA, ...tokensB]).size);
-  const domainPairs: [string, string][] = [
-    ['customer', 'customer_name'], ['name', 'customer_name'], ['amount', 'total_cents'],
-    ['total', 'total_cents'], ['cents', 'total_cents'], ['amount', 'amount_cents'],
-    ['cents', 'amount_cents'], ['total', 'amount_cents'], ['customer', 'customer_name'],
-  ];
-  for (const [x, y] of domainPairs) {
-    if ((na.includes(x) && nb.includes(y)) || (na.includes(y) && nb.includes(x))) return 0.55;
-  }
-  return 0;
-}
-
-export { collectDeclaredColumns, nameSimilarityLocal };
 
