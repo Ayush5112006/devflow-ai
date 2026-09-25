@@ -87,7 +87,7 @@ async function main() {
   console.log(`\nruns: ${runs.length}, findings: ${findings.length}, signals: ${signals.length}`);
   console.log('\n=== SIGNALS (sorted by weight) ===');
   for (const s of [...signals].sort((a, b) => b.weight - a.weight)) {
-    console.log(`  [${s.weight.toFixed(2)}] (${s.agent ?? s.source}/${s.kind}) ${s.subject}\n      ${s.statement}`);
+    console.log(`  [${s.weight.toFixed(2)}] (${s.source}/${s.kind}) ${s.subject}\n      ${s.statement}`);
   }
   console.log(`\ncomponents: ${map.components.map((c) => `${c.layer}:${c.files.length}`).join(', ')}`);
   console.log(`path edges: ${map.path.length}`);

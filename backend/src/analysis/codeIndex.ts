@@ -8,7 +8,8 @@ import {
   STOPWORDS, TEST_PATTERNS,
 } from './patterns.js';
 import {
-  blankNonCode, lineAt, matchBrace, matchParen, objectKeys, type ObjectKey,
+  blankNonCode, lineAt, matchBrace, matchParen, objectKeys,
+  type FunctionRange, type ObjectKey,
 } from './lexer.js';
 import type { ExecutionPathEdge, ProjectComponent, ProjectLayer, ProjectMap } from '../types/index.js';
 import { nowIso } from '../utils/time.js';
@@ -24,7 +25,10 @@ export interface IndexedFile {
   language: string;
   bytes: number;
   source: string;
+  /** Comments and string bodies blanked. Use for braces, parens and chains. */
   blanked: string;
+  /** Comments blanked, string bodies kept. Use for URL/path/keyword matching. */
+  code: string;
   lines: string[];
 }
 
@@ -328,41 +332,76 @@ function findPayloadObject(source: string, blanked: string, fromOffset: number):
   return blanked[i] === '{' ? i : null;
 }
 
-function collectRoutes(file: IndexedFile): RouteDef[] {
+function collectRoutes(file: IndexedFile, fnRanges: FunctionRange[]): RouteDef[] {
   const out: RouteDef[] = [];
   if (!/\.[cm]?[jt]sx?$/.test(file.rel)) return out;
 
-  for (const { framework, re } of ROUTE_PATTERNS) {
+  const framework = FRAMEWORK_IMPORTS.find((f) => f.re.test(file.source))?.name ?? 'http-router';
+  const seen = new Set<string>();
+
+  for (const { re } of ROUTE_PATTERNS) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(file.blanked)) !== null) {
-      const method = m[1].toUpperCase();
-      const routePath = m[2];
+    // `code` keeps string bodies so the path literal is still visible; offsets
+    // are identical to `blanked`, which stays the source of truth for braces.
+    while ((m = re.exec(file.code)) !== null) {
+      // Generic pattern: 1 = object, 2 = method, 3 = quote, 4 = path.
+      // Next pattern:     1 = HTTP verb.
+      const isNext = m[4] === undefined;
+      const method = (m[2] ?? m[1] ?? 'GET').toUpperCase();
+      const routePath = isNext ? '/(next-app-router)' : m[4];
       const line = lineAt(file.blanked, m.index);
       const afterArgs = m.index + m[0].length;
 
-      // Handler name: first identifier after the path argument.
-      let handler: string | null = null;
-      const slice = file.blanked.slice(afterArgs, afterArgs + 220);
-      const h = /^\s*(?:,\s*)?(?:async\s+)?(?:function\s+)?([A-Za-z_$][\w$.]*)\s*(?=[,)]|\([^)]*\)\s*=>)/.exec(slice)
-        ?? /^\s*(?:,\s*)?(?:async\s+)?\(?[^)]*\)?\s*=>\s*(?=\{)/.exec(slice);
-      if (h?.[1]) handler = h[1];
+      // ---- locate the handler and its brace-matched body ------------------
+      const callOpen = file.blanked.indexOf('(', m.index);
+      const callClose = callOpen === -1 ? -1 : matchParen(file.blanked, callOpen);
+      const tailStart = callClose === -1 ? afterArgs : callClose + 1;
+      const tail = file.blanked.slice(tailStart, tailStart + 300);
+      const inlineBody = /^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]*?)?=>|[A-Za-z_$][\w$]*\s*=>)\s*\{/.exec(tail);
+      const named = /^\s*,?\s*(?:async\s+)?(?:function\s+)?([A-Za-z_$][\w$]*)\s*(?=[,)])/.exec(tail);
 
-      // Handler body extent.
-      const braceOffset = file.blanked.indexOf('{', afterArgs + 30);
-      const closeOffset = braceOffset === -1 ? -1 : matchBrace(file.blanked, braceOffset);
-      const handlerStart = lineAt(file.blanked, Math.max(0, afterArgs));
-      const handlerEnd = closeOffset === -1 ? file.lines.length : lineAt(file.blanked, closeOffset);
-      const handlerBody = file.blanked
-        .slice(braceOffset === -1 ? 0 : braceOffset, closeOffset === -1 ? file.blanked.length : closeOffset);
+      let handler: string | null = null;
+      let bodyStartOffset: number | null = null;
+      let bodyEndOffset: number | null = null;
+      let handlerStart = line;
+      let handlerEnd = file.lines.length;
+
+      if (inlineBody) {
+        const brace = file.blanked.indexOf('{', tailStart);
+        if (brace !== -1) {
+          bodyStartOffset = brace;
+          bodyEndOffset = matchBrace(file.blanked, brace);
+          handler = named?.[1] ?? '(inline handler)';
+        }
+      } else if (named?.[1]) {
+        handler = named[1];
+        const range = fnRanges.find((r) => r.name === handler);
+        if (range) {
+          bodyStartOffset = file.blanked.indexOf('{', range.startOffset);
+          bodyEndOffset = range.endOffset;
+          handlerStart = range.startLine;
+          handlerEnd = range.endLine;
+        }
+      } else if (callClose === -1) {
+        const brace = file.blanked.indexOf('{', afterArgs);
+        if (brace !== -1) {
+          bodyStartOffset = brace;
+          bodyEndOffset = matchBrace(file.blanked, brace);
+        }
+      }
+
+      const bodyFrom = bodyStartOffset ?? 0;
+      const bodyTo = bodyEndOffset === null || bodyEndOffset === -1 ? file.blanked.length : bodyEndOffset;
+      const handlerBody = file.blanked.slice(bodyFrom, bodyTo);
 
       // Response payload keys.
       const responseKeys: ObjectKey[] = [];
       let responseLiteralLine: number | null = null;
       const sink = /\b(?:res|reply|response|ctx)\s*\.\s*(?:json|send|end|body)\s*\(/.exec(handlerBody)
         ?? /\breturn\s*\{/.exec(handlerBody);
-      if (sink) {
-        const abs = (braceOffset === -1 ? 0 : braceOffset) + sink.index;
+      if (sink && bodyStartOffset !== null) {
+        const abs = bodyStartOffset + sink.index;
         const payload = findPayloadObject(file.source, file.blanked, abs);
         if (payload !== null) {
           const keys = objectKeys(file.source, file.blanked, payload);
@@ -431,14 +470,6 @@ function collectPropertyAccesses(
     }
   }
   return out;
-}
-
-export interface FunctionRange {
-  name: string;
-  startLine: number;
-  endLine: number;
-  startOffset: number;
-  endOffset: number;
 }
 
 /** Declaration shapes we treat as a function/method boundary. */
@@ -514,27 +545,28 @@ export function enclosingFunctionRange(
   return { name: null, start: 1, end: fileLineCount };
 }
 
-function collectClientCalls(file: IndexedFile, fnRanges: FunctionRange[]): ClientCall[] {
+function collectClientCalls(
+  file: IndexedFile,
+  fnRanges: FunctionRange[],
+  helpers: Map<string, { template: string; file: string; line: number }>,
+): ClientCall[] {
   const out: ClientCall[] = [];
   if (!/\.[cm]?[jt]sx?$/.test(file.rel)) return out;
   const fileEnvRefs = collectEnvRefs(file);
-  const blankedLines = file.blanked.split('\n');
 
   for (const { client, re } of CLIENT_CALL_PATTERNS) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(file.blanked)) !== null) {
-      const line = lineAt(file.blanked, m.index);
+    while ((m = re.exec(file.code)) !== null) {
+      const line = lineAt(file.code, m.index);
       const fn = enclosingFunctionRange(fnRanges, line, file.lines.length);
-      const argStart = file.blanked.indexOf('(', m.index);
+      const argStart = file.code.indexOf('(', m.index);
       const argEnd = argStart === -1 ? -1 : matchParen(file.blanked, argStart);
       const urlExpression = argEnd === -1 || argStart === -1
-        ? (blankedLines[line - 1] ?? '').trim()
+        ? (file.lines[line - 1] ?? '').trim()
         : file.source.slice(argStart + 1, argEnd);
-      // Read the URL from the *original* source so template literals survive.
-      const urlMatch = /(?:['"`])((?:[^'"`$]|\$\{[^}]*\})+)(?:['"`])/.exec(urlExpression);
-      const url = urlMatch ? normaliseUrlTemplate(urlMatch[1]) : null;
       const method = m[1] ? m[1].toUpperCase() : 'GET';
+      const resolved = resolveUrlArgument(urlExpression, helpers);
 
       out.push({
         id: id('cc'),
@@ -543,7 +575,9 @@ function collectClientCalls(file: IndexedFile, fnRanges: FunctionRange[]): Clien
         file: file.rel,
         line,
         urlExpression: urlExpression.trim().slice(0, 200),
-        url,
+        url: resolved.url,
+        urlSource: resolved.source,
+        helper: resolved.helper,
         envRefs: fileEnvRefs.filter((r) => r.line >= fn.start && r.line <= fn.end),
         functionName: fn.name,
         functionStart: fn.start,
@@ -554,6 +588,72 @@ function collectClientCalls(file: IndexedFile, fnRanges: FunctionRange[]): Clien
     }
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* URL argument resolution                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Collects `name -> template` pairs for trivial URL builders such as
+ *   export const predictionsUrl = (id) => `${API_BASE}/api/predictions/${id}`;
+ * so a call like `fetch(predictionsUrl(id))` can still be matched to a route.
+ */
+function collectUrlHelpers(files: Map<string, IndexedFile>): Map<string, { template: string; file: string; line: number }> {
+  const out = new Map<string, { template: string; file: string; line: number }>();
+  const patterns: RegExp[] = [
+    /(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*(?:Url|URL|Path|Endpoint|Route|EndpointUrl))\s*=\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]*)?=>\s*(`[^`]*`|['"][^'"]*['"])/g,
+    /(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*(?:Url|URL|Path|Endpoint|Route))\s*\([^)]*\)\s*(?::[^=]*)?\{\s*return\s*(`[^`]*`|['"][^'"]*['"])/g,
+  ];
+  for (const file of files.values()) {
+    if (!/\.[cm]?[jt]sx?$/.test(file.rel)) continue;
+    for (const re of patterns) {
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(file.source)) !== null) {
+        const name = m[1];
+        const template = m[2].slice(1, -1);
+        if (!name || out.has(name)) continue;
+        out.set(name, { template, file: file.rel, line: lineAt(file.source, m.index) });
+      }
+    }
+  }
+  return out;
+}
+
+interface ResolvedUrl {
+  url: string | null;
+  source: 'literal' | 'helper' | 'template-base' | 'unknown';
+  helper: string | null;
+}
+
+/** Turns a fetch argument into a comparable static path, if one is derivable. */
+function resolveUrlArgument(expr: string, helpers?: Map<string, { template: string; file: string; line: number }>, depth = 0): ResolvedUrl {
+  const text = expr.trim();
+
+  // 1. A quoted literal, possibly a template.
+  const literal = /^(['"`])((?:[^'"`\\]|\\.)*)\1$/.exec(text);
+  if (literal) {
+    const raw = literal[2];
+    const staticPath = normaliseUrlTemplate(raw);
+    return {
+      url: staticPath || null,
+      source: staticPath ? (raw.includes('${') ? 'template-base' : 'literal') : 'unknown',
+      helper: null,
+    };
+  }
+
+  // 2. A call to a local URL builder.
+  const call = /^([A-Za-z_$][\w$]*)\s*\(/.exec(text);
+  if (call?.[1] && helpers?.has(call[1]) && depth < 3) {
+    const helper = helpers.get(call[1]);
+    if (helper) {
+      const inner = resolveUrlArgument(helper.template, helpers, depth + 1);
+      return { url: inner.url, source: 'helper', helper: `${call[1]}@${helper.file}:${helper.line}` };
+    }
+  }
+
+  return { url: null, source: 'unknown', helper: call?.[1] ?? null };
 }
 
 /** `${API_BASE}/api/x` → `/api/x` so it can be matched against declared routes. */
@@ -784,6 +884,7 @@ export async function buildCodeIndex(root: string): Promise<CodeIndex> {
       bytes: entry.bytes,
       source,
       blanked: blankNonCode(source),
+      code: blankNonCode(source, { stripStrings: false }),
       lines: source.split('\n'),
     });
   }
@@ -800,8 +901,9 @@ export async function buildCodeIndex(root: string): Promise<CodeIndex> {
   const importEdges: ImportEdge[] = [];
 
   for (const file of files.values()) {
-    for (const route of collectRoutes(file)) routes.push(route);
-    for (const call of collectClientCalls(file)) clientCalls.push(call);
+    const fnRanges = collectFunctionRanges(file.blanked);
+    for (const route of collectRoutes(file, fnRanges)) routes.push(route);
+    for (const call of collectClientCalls(file, fnRanges)) clientCalls.push(call);
     for (const sym of collectSymbols(file)) {
       const list = symbols.get(sym.name) ?? [];
       list.push(sym);
@@ -1042,5 +1144,5 @@ function scoreRoute(routePath: string, segments: string[]): number {
 }
 
 export { normalise, levenshtein, toPosix };
-export const __testing = { objectKeys, collectPropertyAccesses, enclosingFunction, classifyLayer };
+export const __testing = { objectKeys, collectPropertyAccesses, collectFunctionRanges, classifyLayer };
 void config;
