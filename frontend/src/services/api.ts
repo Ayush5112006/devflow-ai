@@ -28,10 +28,11 @@ export const api = {
   /* Projects */
   projects: () => get<{ projects: ProjectTarget[] }>('/projects'),
 
+  /* Pipeline — live agent registry, real stage list, measured durations */
+  pipeline: () => get<PipelineFacts>('/pipeline'),
+
   /* Demo */
   demoBugs: () => get<{ bugs: DemoBug[] }>('/demo/bugs'),
-  /** Live agent registry, real stage list, and measured durations. */
-  pipeline: () => get<PipelineFacts>('/pipeline'),
   demoQuickstart: (bugId: string) =>
     post<{ investigation: Investigation }>(`/investigations/demo/${bugId}/quickstart`),
 

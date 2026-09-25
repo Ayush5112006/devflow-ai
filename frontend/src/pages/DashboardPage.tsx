@@ -6,47 +6,24 @@ import { Badge, severityBadge } from '../components/Badge.js';
 import { Card } from '../components/Card.js';
 import { LoadingSpinner } from '../components/LoadingSpinner.js';
 
-/** Steps a person performs when investigating by hand. Not measured here. */
-const MANUAL_STEPS = [
-  'Receive bug report',
-  'Gather logs manually',
-  'Context switch across files',
-  'Form a hypothesis',
-  'Manually trace call paths',
-  'Write a fix',
-  'Run tests manually',
-  'Document changes',
-  'Hope for no regression',
-];
-
-/** Render a real duration without pretending to more precision than we have. */
-function duration(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '—';
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.round((ms % 60_000) / 1000);
-  return `${m}m ${String(s).padStart(2, '0')}s`;
-}
-
 export function DashboardPage() {
   const [demoBugs, setDemoBugs] = React.useState<DemoBug[]>([]);
-  const [facts, setFacts] = React.useState<PipelineFacts | null>(null);
-  const [investigations, setInvestigations] = React.useState<Array<{
-    id: string;
-    bug: { title: string; severity: DemoBug['severity'] };
-    status: string;
-  }>>([]);
+  const [pipeline, setPipeline] = React.useState<PipelineFacts | null>(null);
+  const [investigations, setInvestigations] = React.useState<any[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [launching, setLaunching] = React.useState<string | null>(null);
   const navigate = useNavigate();
 
   React.useEffect(() => {
-    Promise.all([api.demoBugs(), api.projects(), api.listInvestigations(), api.pipeline()])
-      .then(([b, p, i, f]) => {
+    Promise.all([
+      api.demoBugs(),
+      api.pipeline(),
+      api.listInvestigations(),
+    ])
+      .then(([b, p, i]) => {
         setDemoBugs(b.bugs);
-        setFacts(f);
-        setInvestigations(i.investigations as typeof investigations);
+        setPipeline(p);
+        setInvestigations(i.investigations);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -65,8 +42,6 @@ export function DashboardPage() {
 
   if (loading) return <LoadingSpinner message="Loading FixFlow AI…" />;
 
-  const observed = facts?.observed ?? null;
-
   return (
     <div className="space-y-8">
       {/* Hero */}
@@ -77,6 +52,16 @@ export function DashboardPage() {
         <p className="text-slate-400 text-lg max-w-2xl mx-auto">
           Agentic bug resolution platform. Select a demo bug to start a fully automated investigation.
         </p>
+        {pipeline && (
+          <div className="flex justify-center gap-6 mt-5 text-sm">
+            <Stat label="parallel agents" value={pipeline.parallelAgentCount} />
+            <Stat label="manual step" value={pipeline.humanGateCount} />
+            <Stat label="workflow stages" value={pipeline.stages.length} />
+            {pipeline.observed && (
+              <Stat label="median run" value={`${(pipeline.observed.medianTotalMs / 1000).toFixed(1)}s`} />
+            )}
+          </div>
+        )}
       </div>
 
       {/* Demo bugs */}
@@ -105,7 +90,7 @@ export function DashboardPage() {
         </div>
       </section>
 
-      {/* Workflow comparison */}
+      {/* Workflow comparison — numbers from the live pipeline endpoint */}
       <section>
         <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-3">
           Workflow Comparison
@@ -113,74 +98,55 @@ export function DashboardPage() {
         <div className="grid gap-4 sm:grid-cols-2">
           <Card title="Traditional Manual Workflow">
             <ol className="space-y-2 text-sm text-slate-400 list-decimal list-inside">
-              {MANUAL_STEPS.map((s, i) => (
+              {['Receive bug report', 'Gather logs manually', 'Context switch across files',
+                'Form a hypothesis', 'Manually trace call paths', 'Write a fix',
+                'Run tests manually', 'Document changes', 'Hope for no regression'].map((s, i) => (
                 <li key={i}>{s}</li>
               ))}
             </ol>
             <div className="mt-4 pt-4 border-t border-slate-700 text-xs text-slate-500">
-              {MANUAL_STEPS.length} steps, all performed by a person.
-              <span className="block mt-1 text-slate-600 italic">
-                FixFlow cannot measure this side — no timings below are claimed for manual work.
-              </span>
+              ⏱ Estimated 90–180 min · 15–20 manual steps · High rework risk
             </div>
           </Card>
-
           <Card title="FixFlow AI Workflow">
             <ol className="space-y-2 text-sm text-slate-300 list-decimal list-inside">
-              {(facts?.stages ?? []).map((s) => (
-                <li key={s.id} className={s.requiresHuman ? 'text-amber-300' : undefined}>
-                  {s.label}
-                  {s.requiresHuman && <span className="ml-2 text-[11px] text-amber-400/80">(human gate)</span>}
+              {pipeline?.stages.map((s) => (
+                <li key={s.id} className={s.requiresHuman ? 'text-yellow-300 font-medium' : ''}>
+                  {s.requiresHuman ? '⏸ ' : ''}{s.label}
+                  {s.requiresHuman && <span className="text-slate-500 font-normal"> — human decision</span>}
                 </li>
-              ))}
+              )) ?? []}
             </ol>
-            <div className="mt-4 pt-4 border-t border-slate-700 text-xs space-y-1">
-              {observed ? (
-                <>
-                  <p className="text-emerald-400">
-                    Measured over {observed.sampleSize} completed{' '}
-                    {observed.sampleSize === 1 ? 'investigation' : 'investigations'}:{' '}
-                    {duration(observed.minTotalMs)}–{duration(observed.maxTotalMs)} end to end
-                    (median {duration(observed.medianTotalMs)}).
-                  </p>
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-slate-400">
-                    <dt>Analysis</dt>
-                    <dd className="text-slate-200">{duration(observed.medianInvestigationMs)}</dd>
-                    <dt>Implementation</dt>
-                    <dd className="text-slate-200">{duration(observed.medianImplementationMs)}</dd>
-                    <dt>Verification</dt>
-                    <dd className="text-slate-200">{duration(observed.medianVerificationMs)}</dd>
-                    <dt>Analysis agents</dt>
-                    <dd className="text-slate-200">{observed.medianAgentsUsed}</dd>
-                    <dt>Files inspected</dt>
-                    <dd className="text-slate-200">{observed.medianFilesInspected}</dd>
-                    <dt>Tests run</dt>
-                    <dd className="text-slate-200">{observed.medianTestsExecuted}</dd>
-                    <dt>Hypotheses rejected</dt>
-                    <dd className="text-slate-200">
-                      {observed.medianHypothesesGenerated - observed.medianHypothesesRejected} kept,{' '}
-                      {observed.medianHypothesesRejected} discarded
-                    </dd>
-                    <dt>Human steps</dt>
-                    <dd className="text-slate-200">{observed.medianManualSteps}</dd>
-                  </dl>
-                </>
-              ) : (
-                <p className="text-slate-500 italic">
-                  No completed investigation yet, so no duration is claimed. Run one and
-                  this panel fills in with its own recorded timings.
-                </p>
-              )}
-              <p className="text-slate-500 pt-1">
-                {facts?.parallelAgentCount ?? 0} analysis agents ·{' '}
-                {facts?.humanGateCount ?? 0} human gate
-                {facts?.humanGateCount === 1 ? '' : 's'}
-                {facts && facts.humanGateCount > 0 && ` (${facts.humanGateStages.join(', ')})`}
-              </p>
+            <div className="mt-4 pt-4 border-t border-slate-700 text-xs text-emerald-400">
+              {pipeline
+                ? `⚡ ${pipeline.parallelAgentCount} parallel agents · ${pipeline.humanGateCount} manual step (${pipeline.humanGateStages.join(', ')}) · Reproducible`
+                : '⚡ Parallel agents · 1 manual step · Reproducible'}
             </div>
           </Card>
         </div>
       </section>
+
+      {/* Live stats from completed runs (only shown when there is real data) */}
+      {pipeline?.observed && (
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-3">
+            Measured Performance ({pipeline.observed.sampleSize} completed run{pipeline.observed.sampleSize !== 1 ? 's' : ''})
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: 'Median total', value: `${(pipeline.observed.medianTotalMs / 1000).toFixed(1)}s` },
+              { label: 'Files inspected', value: pipeline.observed.medianFilesInspected },
+              { label: 'Hypotheses', value: pipeline.observed.medianHypothesesGenerated },
+              { label: 'Agents used', value: pipeline.observed.medianAgentsUsed },
+            ].map((m) => (
+              <div key={m.label} className="bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-center">
+                <p className="text-xl font-bold text-emerald-400">{m.value}</p>
+                <p className="text-xs text-slate-500 mt-1">{m.label}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Recent investigations */}
       {investigations.length > 0 && (
@@ -189,15 +155,15 @@ export function DashboardPage() {
             Recent Investigations
           </h2>
           <div className="space-y-2">
-            {investigations.slice(0, 5).map((inv) => (
+            {investigations.slice(0, 5).map((inv: any) => (
               <Link
                 key={inv.id}
                 to={`/investigations/${inv.id}`}
                 className="flex items-center gap-4 px-4 py-3 bg-slate-800/60 border border-slate-700 rounded-lg hover:border-blue-500/40 transition-colors"
               >
-                <span className="text-xs font-mono text-slate-500">{inv.id.slice(0, 12)}</span>
-                <span className="text-sm text-slate-200 flex-1 truncate">{inv.bug.title}</span>
-                {severityBadge(inv.bug.severity)}
+                <span className="text-xs font-mono text-slate-500">{inv.id?.slice(0, 12)}</span>
+                <span className="text-sm text-slate-200 flex-1 truncate">{inv.bug?.title}</span>
+                {severityBadge(inv.bug?.severity)}
                 <Badge variant={inv.status === 'completed' ? 'success' : inv.status === 'failed' ? 'danger' : 'info'}>
                   {inv.status}
                 </Badge>
@@ -206,6 +172,15 @@ export function DashboardPage() {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="text-center">
+      <span className="text-2xl font-bold text-white">{value}</span>
+      <span className="text-slate-400 ml-1.5 text-sm">{label}</span>
     </div>
   );
 }

@@ -272,35 +272,43 @@ function buildDbRemediation(
   index: CodeIndex,
   expectations: EvidenceExpectation,
 ): Remediation | null {
-  // The subject is the wrong column name; find the nearest declared column.
-  const schemaEv = hyp.supporting.find((e) => e.description?.includes('declares'));
-  const queryEv = hyp.supporting.find((e) => (e.description?.includes('Query') || e.description?.includes('reads')) && indexedLocation(index, e));
-
-  if (!queryEv) return null;
-  const queryAt = indexedLocation(index, queryEv)!;
-
   const wrongCol = hyp.subject.split('.').pop() ?? hyp.subject;
-  const declaredMatch = /declares: ([^\n]+)/.exec(schemaEv?.description ?? '');
-  const declared = declaredMatch?.[1]?.split(',').map((s) => s.trim().split(' ')[0]).filter(Boolean) ?? [];
+
+  // Work from the index, not from prose. The evidence text is written for a
+  // human reader and its wording is not a contract; the parsed schema and the
+  // parsed query are.
+  //
+  // Find the query that actually references the column, and the table whose
+  // declared schema omits it.
+  const ref = index.queries
+    .flatMap((q) => q.columnRefs.map((c) => ({ q, c })))
+    .find(({ c }) => c.column === wrongCol && c.table);
+  if (!ref) return null;
+
+  const table = index.tables.find((t) => t.name === ref.c.table);
+  if (!table || table.columns.length === 0) return null;
+  // If the table does declare the column after all, this is not a schema
+  // mismatch and we must not propose rewriting the query.
+  if (table.columns.some((c) => c.name === wrongCol)) return null;
 
   // Pick the declared column that most resembles the wrong one. Taking the
   // first declared column instead would confidently "fix" `customer_name`
   // into `id`, which is a different, wrong repair.
   let rightCol = '';
   let bestScore = 0;
-  for (const candidate of declared) {
-    if (candidate === wrongCol) continue;
-    const { score } = nameSimilarity(wrongCol, candidate);
+  for (const candidate of table.columns) {
+    if (candidate.name === wrongCol) continue;
+    const { score } = nameSimilarity(wrongCol, candidate.name);
     if (score > bestScore) {
       bestScore = score;
-      rightCol = candidate;
+      rightCol = candidate.name;
     }
   }
 
-  if (!rightCol || rightCol === wrongCol) return null;
+  if (!rightCol) return null;
   if (bestScore < 0.3) return null; // nothing resembles it — do not guess a repair
 
-  const queryFile = queryAt.file;
+  const queryFile = ref.q.file;
   const diffPreview = `-${wrongCol}\n+${rightCol}`;
 
   return {
@@ -312,8 +320,8 @@ function buildDbRemediation(
       find: wrongCol,
       replace: rightCol,
       occurrences: 1,
-      lineHint: queryAt.line,
-      reason: `The schema declares ${q(rightCol)}; the query uses ${q(wrongCol)}, which does not exist.`,
+      lineHint: ref.q.line,
+      reason: `${table.name} declares ${q(rightCol)}; the query at ${queryFile}:${ref.q.line} uses ${q(wrongCol)}, which the schema does not define.`,
     }],
     risk: 'medium',
     verification: `The SQL statement executes without error; the endpoint returns HTTP 200 with the expected data.`,
