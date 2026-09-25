@@ -395,6 +395,11 @@ export class InvestigationService {
       level,
       message,
     };
+    // Keep the log on the investigation. Emitting it only reached clients that
+    // happened to be connected, so reloading a finished investigation showed an
+    // empty activity log and the audit trail was lost.
+    inv.activity.unshift(entry);
+    if (inv.activity.length > 200) inv.activity.length = 200;
     this.emit(inv, 'activity', { entry });
   }
 
@@ -456,6 +461,7 @@ function emptyInvestigation(
     report: null,
     metrics: null,
     errors: [],
+    activity: [],
   };
 }
 

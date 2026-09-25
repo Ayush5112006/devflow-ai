@@ -22,6 +22,8 @@ export function useInvestigation(id: string | undefined): UseInvestigationResult
     try {
       const { investigation: inv } = await api.getInvestigation(id);
       setInvestigation(inv);
+      // The stored log is authoritative on load; live events append to it.
+      if (inv.activity) setActivity(inv.activity);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -32,7 +34,11 @@ export function useInvestigation(id: string | undefined): UseInvestigationResult
 
     setLoading(true);
     api.getInvestigation(id)
-      .then(({ investigation: inv }) => { setInvestigation(inv); setLoading(false); })
+      .then(({ investigation: inv }) => {
+        setInvestigation(inv);
+        if (inv.activity) setActivity(inv.activity);
+        setLoading(false);
+      })
       .catch((e) => { setError(e instanceof Error ? e.message : String(e)); setLoading(false); });
 
     const es = api.stream(id);

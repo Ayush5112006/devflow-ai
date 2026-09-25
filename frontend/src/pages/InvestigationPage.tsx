@@ -8,6 +8,19 @@ import { LoadingSpinner } from '../components/LoadingSpinner.js';
 import { PipelineDiagram } from '../components/PipelineDiagram.js';
 import { ActivityLog } from '../components/ActivityLog.js';
 
+/**
+ * Human-readable elapsed time. Sub-minute runs used to round to a literal
+ * "0 min", which made a fast (and successful) run look like it saved nothing.
+ */
+function duration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const min = Math.floor(ms / 60_000);
+  const sec = Math.round((ms % 60_000) / 1000);
+  return sec ? `${min}m ${sec}s` : `${min}m`;
+}
+
 export function InvestigationPage() {
   const { id } = useParams<{ id: string }>();
   const { investigation: inv, activity, loading, error, refresh } = useInvestigation(id);
@@ -110,10 +123,19 @@ export function InvestigationPage() {
             </div>
           </div>
         )}
-        {inv.status === 'approved' && !inv.implementation && (
+        {/*
+          The service moves straight from `awaiting_approval` to `implementing`,
+          so `approved` is never observed here even though it exists in the
+          status union. Gating on it made this panel unreachable and left the
+          workflow dead-ended with no way forward.
+        */}
+        {(inv.status === 'approved' || inv.status === 'implementing') && !inv.implementation && (
           <div className="shrink-0">
             <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 space-y-3">
               <p className="text-sm font-semibold text-blue-300">✓ Approved</p>
+              <p className="text-xs text-slate-400">
+                Applying the approved plan. Nothing else is written to the workspace.
+              </p>
               <button
                 onClick={implement}
                 disabled={implementing}
@@ -164,9 +186,9 @@ export function InvestigationPage() {
 /* Tab panels                                                         */
 /* ------------------------------------------------------------------ */
 
-import type { Investigation } from '../types/index.js';
+import type { ActivityEntry, Investigation } from '../types/index.js';
 
-function PipelineTab({ inv, activity }: { inv: Investigation; activity: any[] }) {
+function PipelineTab({ inv, activity }: { inv: Investigation; activity: ActivityEntry[] }) {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <div className="lg:col-span-1">
@@ -282,7 +304,9 @@ function RootCauseTab({ inv }: { inv: Investigation }) {
             <tbody>
               {rc.hypotheses.map((h) => (
                 <tr key={h.id} className="border-b border-slate-700/50">
-                  <td className="py-2 pr-4 text-slate-300 max-w-xs">{h.statement.slice(0, 80)}…</td>
+                  <td className="py-2 pr-4 text-slate-300 max-w-xs">
+                    {h.statement.length > 80 ? `${h.statement.slice(0, 80).trimEnd()}…` : h.statement}
+                  </td>
                   <td className="py-2 pr-4">
                     <Badge variant={h.status === 'supported' ? 'success' : h.status === 'possible' ? 'info' : 'muted'}>{h.status}</Badge>
                   </td>
@@ -548,20 +572,32 @@ function ReportTab({ inv }: { inv: Investigation }) {
         <Card title="Workflow Comparison">
           <div className="grid sm:grid-cols-3 gap-4 text-sm">
             <div>
-              <p className="text-xs text-slate-500 mb-1">Manual Workflow</p>
+              <p className="text-xs text-slate-500 mb-1">Manual Workflow <span className="italic">(estimated baseline)</span></p>
               <p className="text-lg font-bold text-slate-300">{metrics.comparison.baseline.totalMinutes} min</p>
               <p className="text-xs text-slate-500">{metrics.comparison.baseline.manualSteps} manual steps</p>
             </div>
             <div className="flex items-center justify-center text-2xl text-blue-400">→</div>
             <div>
-              <p className="text-xs text-slate-500 mb-1">FixFlow AI</p>
-              <p className="text-lg font-bold text-emerald-400">{metrics.comparison.fixflow.totalMinutes} min</p>
-              <p className="text-xs text-slate-500">{metrics.comparison.fixflow.manualSteps} manual step</p>
+              <p className="text-xs text-slate-500 mb-1">FixFlow AI <span className="italic">(measured)</span></p>
+              <p className="text-lg font-bold text-emerald-400">{duration(metrics.comparison.fixflow.totalMinutes * 60_000)}</p>
+              <p className="text-xs text-slate-500">
+                {metrics.comparison.fixflow.manualSteps} manual{' '}
+                {metrics.comparison.fixflow.manualSteps === 1 ? 'step' : 'steps'}
+              </p>
             </div>
           </div>
-          <div className="mt-3 pt-3 border-t border-slate-700 text-xs text-emerald-400">
-            ⚡ Saved ~{metrics.comparison.deltas.timeSavedMinutes.toFixed(0)} min · {metrics.comparison.deltas.manualStepsReduced} steps automated
+          <div className="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-400">
+            <span className="text-emerald-400">
+              Saved {duration(metrics.comparison.deltas.timeSavedMinutes * 60_000)}
+            </span>{' '}
+            against the estimated manual baseline ·{' '}
+            {metrics.comparison.deltas.manualStepsReduced} steps automated
           </div>
+          {metrics.comparison.notes.length > 0 && (
+            <ul className="mt-2 text-xs text-slate-500 list-disc list-inside space-y-0.5">
+              {metrics.comparison.notes.map((n, i) => <li key={i}>{n}</li>)}
+            </ul>
+          )}
         </Card>
       )}
 

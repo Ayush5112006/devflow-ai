@@ -43,17 +43,19 @@ export function DashboardPage() {
   if (loading) return <LoadingSpinner message="Loading FixFlow AI…" />;
 
   return (
-    <div className="space-y-8">
+    <div className="dashboard">
       {/* Hero */}
-      <div className="text-center py-8">
-        <h1 className="text-4xl font-bold text-white mb-3">
-          <span className="text-blue-400">Fix</span>Flow AI
-        </h1>
-        <p className="text-slate-400 text-lg max-w-2xl mx-auto">
-          Agentic bug resolution platform. Select a demo bug to start a fully automated investigation.
-        </p>
+      <div className="dashboard-hero">
+        <div>
+          <p className="eyebrow">Autonomous engineering operations</p>
+          <h1 className="dashboard-title">Move from <span>signal</span> to shipped fix.</h1>
+          <p className="dashboard-subtitle">
+            Investigate production bugs with coordinated agents, auditable evidence, and a human approval gate before changes land.
+          </p>
+        </div>
+        <Link to="/new" className="hero-action">+ New investigation</Link>
         {pipeline && (
-          <div className="flex justify-center gap-6 mt-5 text-sm">
+          <div className="stats-row">
             <Stat label="parallel agents" value={pipeline.parallelAgentCount} />
             <Stat label="manual step" value={pipeline.humanGateCount} />
             <Stat label="workflow stages" value={pipeline.stages.length} />
@@ -66,22 +68,20 @@ export function DashboardPage() {
 
       {/* Demo bugs */}
       <section>
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-3">
-          Demo Scenarios
-        </h2>
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="section-heading"><h2>Start with a known failure</h2><p>Curated scenarios from InsightBoard</p></div>
+        <div className="scenario-grid">
           {demoBugs.map((bug) => (
-            <div key={bug.id} className="bg-slate-800/60 border border-slate-700 rounded-xl p-5 flex flex-col gap-3 hover:border-blue-500/50 transition-colors">
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-xs font-mono text-slate-500 uppercase">{bug.id}</span>
+            <div key={bug.id} className="scenario-card">
+              <div className="scenario-meta">
+                <span>{bug.id}</span>
                 {severityBadge(bug.severity)}
               </div>
-              <p className="text-sm font-semibold text-white leading-snug">{bug.title}</p>
-              <p className="text-xs text-slate-400 leading-relaxed flex-1">{bug.oneLine}</p>
+              <p className="scenario-title">{bug.title}</p>
+              <p className="scenario-description">{bug.oneLine}</p>
               <button
                 onClick={() => launchDemo(bug.id)}
                 disabled={launching !== null}
-                className="w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="scenario-button"
               >
                 {launching === bug.id ? 'Launching…' : 'Investigate with FixFlow'}
               </button>
@@ -178,9 +178,9 @@ export function DashboardPage() {
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="text-center">
-      <span className="text-2xl font-bold text-white">{value}</span>
-      <span className="text-slate-400 ml-1.5 text-sm">{label}</span>
+    <div className="stat">
+      <span className="stat-value">{value}</span>
+      <span className="stat-label">{label}</span>
     </div>
   );
 }

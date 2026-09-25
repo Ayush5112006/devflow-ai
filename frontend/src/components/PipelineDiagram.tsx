@@ -6,6 +6,7 @@ const STAGE_LABELS: Record<string, string> = {
   investigation: 'Investigation',
   rootCause: 'Root Cause',
   changePlan: 'Change Plan',
+  approval: 'Approval (human)',
   implementation: 'Implementation',
   verification: 'Verification',
   regression: 'Regression',
@@ -35,16 +36,18 @@ function statusIcon(status: string): string {
 }
 
 function statusColor(status: string): string {
-  if (status === 'completed' || status === 'clean') return 'text-emerald-400';
+  if (status === 'completed' || status === 'clean' || status === 'passed') return 'text-emerald-400';
   if (status === 'running' || status === 'investigating') return 'text-blue-400 animate-pulse';
   if (status === 'failed') return 'text-red-400';
-  if (status === 'waiting_approval') return 'text-yellow-400';
+  // Both spellings occur: the stage record uses waiting_approval, the
+  // investigation status uses awaiting_approval.
+  if (status === 'waiting_approval' || status === 'awaiting_approval') return 'text-yellow-400';
   return 'text-slate-500';
 }
 
 export function PipelineDiagram({ stages, agents }: Props) {
   const stageOrder: StageId[] = [
-    'projectAnalysis', 'investigation', 'rootCause', 'changePlan',
+    'projectAnalysis', 'investigation', 'rootCause', 'changePlan', 'approval',
     'implementation', 'verification', 'regression', 'report',
   ];
 

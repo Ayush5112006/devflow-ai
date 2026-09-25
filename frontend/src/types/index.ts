@@ -9,7 +9,7 @@ export type AgentId =
 
 export type StageId =
   | 'projectAnalysis' | 'investigation' | 'rootCause' | 'changePlan'
-  | 'implementation' | 'verification' | 'regression' | 'report';
+  | 'approval' | 'implementation' | 'verification' | 'regression' | 'report';
 
 export type StageStatus = 'pending' | 'running' | 'completed' | 'failed' | 'waiting_approval' | 'skipped';
 
@@ -325,6 +325,8 @@ export interface Investigation {
   report: Report | null;
   metrics: Metrics | null;
   errors: { message: string; blocking: boolean }[];
+  /** Ordered newest-first, capped at 200. */
+  activity: ActivityEntry[];
 }
 
 export interface DemoBug {

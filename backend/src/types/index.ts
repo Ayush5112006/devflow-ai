@@ -620,6 +620,8 @@ export interface Investigation {
   report: Report | null;
   metrics: Metrics | null;
   errors: AgentError[];
+  /** Ordered newest-first, capped at 200. Persisted so the log survives a reload. */
+  activity: ActivityEntry[];
 }
 
 export interface ProjectTarget {
