@@ -1,0 +1,983 @@
+import path from 'node:path';
+import { config } from '../config.js';
+import { readTextFile, walkProject, toPosix } from '../utils/fsSafe.js';
+import {
+  CLASS_METHOD, CLIENT_CALL_PATTERNS, CREATE_TABLE, ENV_ACCESS_PATTERNS, ENV_DECL_PATTERN,
+  FRAMEWORK_SIGNATURES, FUNCTION_PATTERNS, IMPORT_FROM, MONGOOSE_FIELD, PREPARED_SQL,
+  PRISMA_FIELD, REQUIRE_CALL, ROUTE_PATTERNS, SEMANTIC_GROUPS, SEQUELIZE_FIELD, STOPWORDS,
+  TEST_PATTERNS,
+} from './patterns.js';
+import { blankNonCode, lineAt, matchBrace, objectKeys, type ObjectKey } from './lexer.js';
+import type { ExecutionPathEdge, ProjectComponent, ProjectLayer, ProjectMap } from '../types/index.js';
+import { nowIso } from '../utils/time.js';
+import { id } from '../utils/id.js';
+
+/* ------------------------------------------------------------------ */
+/* Shapes                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface IndexedFile {
+  rel: string;
+  layer: ProjectLayer;
+  language: string;
+  bytes: number;
+  source: string;
+  blanked: string;
+  lines: string[];
+}
+
+export interface SymbolDef {
+  name: string;
+  kind: 'function' | 'class' | 'method' | 'component' | 'constant';
+  file: string;
+  line: number;
+  exported: boolean;
+}
+
+export interface EnvRef {
+  name: string;
+  file: string;
+  line: number;
+  accessor: string;
+  snippet: string;
+}
+
+export interface EnvDeclaration {
+  name: string;
+  file: string;
+  line: number;
+  value: string;
+}
+
+export interface RouteDef {
+  id: string;
+  framework: string;
+  method: string;
+  path: string;
+  file: string;
+  line: number;
+  handler: string | null;
+  /** Top-level keys the handler actually sends. */
+  responseKeys: ObjectKey[];
+  /** Where the response payload literal starts. */
+  responseLiteralLine: number | null;
+  envRefs: EnvRef[];
+  /** SQL statements executed inside the handler range. */
+  sql: string[];
+}
+
+export interface PropertyAccess {
+  /** e.g. ['data', 'prediction'] */
+  chain: string[];
+  file: string;
+  line: number;
+  snippet: string;
+}
+
+export interface ClientCall {
+  id: string;
+  client: string;
+  method: string;
+  file: string;
+  line: number;
+  urlExpression: string;
+  url: string | null;
+  envRefs: EnvRef[];
+  /** Enclosing function range, used to scope property accesses. */
+  functionName: string | null;
+  functionStart: number;
+  functionEnd: number;
+  /** Property accesses found within the enclosing function. */
+  accesses: PropertyAccess[];
+  /** Response variable names assigned from the call, when detectable. */
+  responseVars: string[];
+}
+
+export interface TableDef {
+  name: string;
+  file: string;
+  line: number;
+  columns: { name: string; type: string; line: number }[];
+  source: 'sql' | 'orm';
+}
+
+export interface ModelDef {
+  name: string;
+  file: string;
+  line: number;
+  fields: { name: string; type: string; line: number }[];
+  orm: string;
+}
+
+export interface QueryRef {
+  file: string;
+  line: number;
+  sql: string;
+  tables: string[];
+  columns: string[];
+}
+
+export interface TestDef {
+  name: string;
+  file: string;
+  line: number;
+  kind: 'test' | 'suite';
+}
+
+export interface ImportEdge {
+  from: string;
+  to: string;
+  specifier: string;
+  line: number;
+}
+
+export interface CodeIndex {
+  root: string;
+  generatedAt: string;
+  files: Map<string, IndexedFile>;
+  fileCount: number;
+  totalBytes: number;
+  languageBreakdown: Record<string, number>;
+  truncated: boolean;
+  routes: RouteDef[];
+  clientCalls: ClientCall[];
+  symbols: Map<string, SymbolDef[]>;
+  envRefs: EnvRef[];
+  envDeclarations: EnvDeclaration[];
+  tables: TableDef[];
+  models: ModelDef[];
+  queries: QueryRef[];
+  tests: TestDef[];
+  importEdges: ImportEdge[];
+  packageManager: string;
+  scripts: Record<string, string>;
+  dependencies: string[];
+  frameworks: string[];
+  testRunner: string;
+  entryPoints: { name: string; command: string; file?: string }[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Layer + language classification                                     */
+/* ------------------------------------------------------------------ */
+
+const LANGUAGE_BY_EXT: Record<string, string> = {
+  '.ts': 'TypeScript', '.tsx': 'TypeScript', '.mts': 'TypeScript', '.cts': 'TypeScript',
+  '.js': 'JavaScript', '.jsx': 'JavaScript', '.mjs': 'JavaScript', '.cjs': 'JavaScript',
+  '.json': 'JSON', '.jsonc': 'JSON', '.sql': 'SQL', '.md': 'Markdown', '.mdx': 'Markdown',
+  '.yml': 'YAML', '.yaml': 'YAML', '.html': 'HTML', '.css': 'CSS', '.py': 'Python',
+  '.rb': 'Ruby', '.go': 'Go', '.java': 'Java', '.txt': 'Text', '.env': 'Dotenv',
+};
+
+const CONFIG_FILES = new Set([
+  'package.json', 'tsconfig.json', 'vite.config.ts', 'vite.config.js', 'next.config.js',
+  'next.config.mjs', 'tailwind.config.js', 'tailwind.config.ts', 'postcss.config.js',
+  'eslint.config.js', '.eslintrc', '.eslintrc.js', '.eslintrc.json', 'jest.config.js',
+  'vitest.config.ts', 'vitest.config.js', 'playwright.config.ts', 'Dockerfile',
+  'docker-compose.yml', 'schema.prisma', 'Makefile', '.env', '.env.example', '.env.local',
+  '.env.development', '.env.production', '.env.test', 'README.md', '.gitignore',
+]);
+
+function classifyLayer(rel: string): ProjectLayer {
+  const lower = rel.toLowerCase();
+  const base = path.basename(lower);
+  const ext = path.extname(lower);
+
+  if (ext === '.sql' || /(^|\/)(db|database|migrations?|schema|seeds?)(\/|$)/.test(lower) || base === 'schema.prisma') {
+    return 'database';
+  }
+  if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(base) || /(^|\/)(__tests__|tests?|spec|e2e)(\/|$)/.test(lower)) {
+    return 'tests';
+  }
+  if (ext === '.md' || ext === '.mdx' || ext === '.txt') return 'docs';
+  if (ext === '.json' || ext === '.yml' || ext === '.yaml' || base.startsWith('.') || ext === '.css' || ext === '.html') {
+    return 'config';
+  }
+  if (base.endsWith('.config.ts') || base.endsWith('.config.js') || base.endsWith('.config.mjs')) return 'config';
+  if (/(^|\/)(scripts|tools|bin)(\/|$)/.test(lower)) return 'scripts';
+  if (/(^|\/)(client|web|ui|frontend|app_public|public)(\/|$)/.test(lower)) return 'frontend';
+  if (/(^|\/)(server|backend|api|services?|src\/routes?)(\/|$)/.test(lower)) return 'backend';
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(ext)) return 'backend';
+  return 'other';
+}
+
+function languageOf(rel: string): string {
+  const ext = path.extname(rel).toLowerCase();
+  if (LANGUAGE_BY_EXT[ext]) return LANGUAGE_BY_EXT[ext];
+  const base = path.basename(rel);
+  if (base.startsWith('.env')) return 'Dotenv';
+  if (base === 'Dockerfile') return 'Dockerfile';
+  return ext.replace('.', '').toUpperCase() || 'Text';
+}
+
+/* ------------------------------------------------------------------ */
+/* Building blocks                                                     */
+/* ------------------------------------------------------------------ */
+
+function collectEnvRefs(file: IndexedFile): EnvRef[] {
+  const refs: EnvRef[] = [];
+  const lines = file.source.split('\n');
+  for (const pattern of ENV_ACCESS_PATTERNS) {
+    pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(file.source)) !== null) {
+      const line = lineAt(file.source, m.index);
+      refs.push({
+        name: m[1],
+        file: file.rel,
+        line,
+        accessor: m[0].replace(m[1], '').replace(/\.$/, ''),
+        snippet: (lines[line - 1] ?? '').trim().slice(0, 200),
+      });
+    }
+  }
+  return refs;
+}
+
+function collectSymbols(file: IndexedFile): SymbolDef[] {
+  const out: SymbolDef[] = [];
+  const lines = file.blanked.split('\n');
+
+  for (const pattern of FUNCTION_PATTERNS.slice(0, 2)) {
+    pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(file.blanked)) !== null) {
+      const line = lineAt(file.blanked, m.index);
+      if (m[1] === '_' || m[1] === 'React') continue;
+      const text = lines[line - 1] ?? '';
+      out.push({
+        name: m[1],
+        kind: /^[A-Z]/.test(m[1]) && /\.jsx?$/.test(file.rel) ? 'component' : 'function',
+        file: file.rel,
+        line,
+        exported: /export/.test(text),
+      });
+    }
+  }
+
+  FUNCTION_PATTERNS[2].lastIndex = 0;
+  let cm: RegExpExecArray | null;
+  while ((cm = FUNCTION_PATTERNS[2].exec(file.blanked)) !== null) {
+    out.push({
+      name: cm[1],
+      kind: 'class',
+      file: file.rel,
+      line: lineAt(file.blanked, cm.index),
+      exported: /export/.test(lines[lineAt(file.blanked, cm.index) - 1] ?? ''),
+    });
+  }
+
+  CLASS_METHOD.lastIndex = 0;
+  let mm: RegExpExecArray | null;
+  while ((mm = CLASS_METHOD.exec(file.blanked)) !== null) {
+    const name = mm[1];
+    if (['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return', 'function'].includes(name)) continue;
+    out.push({ name, kind: 'method', file: file.rel, line: lineAt(file.blanked, mm.index), exported: false });
+  }
+
+  const seen = new Set<string>();
+  return out.filter((s) => {
+    const k = `${s.kind}:${s.name}:${s.line}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function collectTests(file: IndexedFile): TestDef[] {
+  const out: TestDef[] = [];
+  if (file.layer !== 'tests' && !/\.(test|spec)\./.test(file.rel)) return out;
+  for (const pattern of TEST_PATTERNS) {
+    pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(file.blanked)) !== null) {
+      out.push({
+        name: m[2],
+        file: file.rel,
+        line: lineAt(file.blanked, m.index),
+        kind: pattern.source.startsWith('\\bdescribe') || m[0].startsWith('describe') ? 'suite' : 'test',
+      });
+    }
+  }
+  return out;
+}
+
+function collectImports(file: IndexedFile): ImportEdge[] {
+  const out: ImportEdge[] = [];
+  const dir = path.posix.dirname(file.rel);
+  IMPORT_FROM.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = IMPORT_FROM.exec(file.blanked)) !== null) {
+    out.push({ from: file.rel, to: '', specifier: m[1], line: lineAt(file.blanked, m.index), dir } as ImportEdge & { dir: string });
+  }
+  REQUIRE_CALL.lastIndex = 0;
+  while ((m = REQUIRE_CALL.exec(file.blanked)) !== null) {
+    out.push({ from: file.rel, to: '', specifier: m[1], line: lineAt(file.blanked, m.index), dir } as ImportEdge & { dir: string });
+  }
+  return out;
+}
+
+/** Finds the `{` that opens the argument of `sink(` at the call offset. */
+function findPayloadObject(source: string, blanked: string, fromOffset: number): number | null {
+  const open = blanked.indexOf('(', fromOffset);
+  if (open === -1) return null;
+  let i = open + 1;
+  while (i < blanked.length && /\s/.test(blanked[i])) i += 1;
+  return blanked[i] === '{' ? i : null;
+}
+
+function collectRoutes(file: IndexedFile): RouteDef[] {
+  const out: RouteDef[] = [];
+  if (!/\.[cm]?[jt]sx?$/.test(file.rel)) return out;
+
+  for (const { framework, re } of ROUTE_PATTERNS) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(file.blanked)) !== null) {
+      const method = m[1].toUpperCase();
+      const routePath = m[2];
+      const line = lineAt(file.blanked, m.index);
+      const afterArgs = m.index + m[0].length;
+
+      // Handler name: first identifier after the path argument.
+      let handler: string | null = null;
+      const slice = file.blanked.slice(afterArgs, afterArgs + 220);
+      const h = /^\s*(?:,\s*)?(?:async\s+)?(?:function\s+)?([A-Za-z_$][\w$.]*)\s*(?=[,)]|\([^)]*\)\s*=>)/.exec(slice)
+        ?? /^\s*(?:,\s*)?(?:async\s+)?\(?[^)]*\)?\s*=>\s*(?=\{)/.exec(slice);
+      if (h?.[1]) handler = h[1];
+
+      // Handler body extent.
+      const braceOffset = file.blanked.indexOf('{', afterArgs + 30);
+      const closeOffset = braceOffset === -1 ? -1 : matchBrace(file.blanked, braceOffset);
+      const handlerStart = lineAt(file.blanked, Math.max(0, afterArgs));
+      const handlerEnd = closeOffset === -1 ? file.lines.length : lineAt(file.blanked, closeOffset);
+      const handlerBody = file.blanked
+        .slice(braceOffset === -1 ? 0 : braceOffset, closeOffset === -1 ? file.blanked.length : closeOffset);
+
+      // Response payload keys.
+      const responseKeys: ObjectKey[] = [];
+      let responseLiteralLine: number | null = null;
+      const sink = /\b(?:res|reply|response|ctx)\s*\.\s*(?:json|send|end|body)\s*\(/.exec(handlerBody)
+        ?? /\breturn\s*\{/.exec(handlerBody);
+      if (sink) {
+        const abs = (braceOffset === -1 ? 0 : braceOffset) + sink.index;
+        const payload = findPayloadObject(file.source, file.blanked, abs);
+        if (payload !== null) {
+          const keys = objectKeys(file.source, file.blanked, payload);
+          if (keys.length > 0) {
+            responseKeys.push(...keys);
+            responseLiteralLine = keys[0]?.line ?? lineAt(file.source, payload);
+          }
+        }
+      }
+
+      const envRefs = collectEnvRefs(file).filter(
+        (r) => r.line >= handlerStart && r.line <= handlerEnd,
+      );
+      const sql: string[] = [];
+      PREPARED_SQL.lastIndex = 0;
+      let q: RegExpExecArray | null;
+      while ((q = PREPARED_SQL.exec(handlerBody)) !== null) sql.push(q[2].replace(/\s+/g, ' ').trim().slice(0, 400));
+
+      out.push({
+        id: id('rt'),
+        framework,
+        method,
+        path: routePath,
+        file: file.rel,
+        line,
+        handler,
+        responseKeys,
+        responseLiteralLine,
+        envRefs,
+        sql,
+      });
+    }
+  }
+  return out;
+}
+
+/** Extracts `a.b.c` chains from code, ignoring noise. */
+const CHAIN_RE = /(?<![\w$.'"])([A-Za-z_$][\w$]*)((?:\s*\?\s*\.\s*|\s*\.\s*)([A-Za-z_$][\w$]*))((?:\s*\?\s*\.\s*|\s*\.\s*([A-Za-z_$][\w$]*))?)/g;
+
+function collectPropertyAccesses(
+  file: IndexedFile,
+  startLine: number,
+  endLine: number,
+): PropertyAccess[] {
+  const out: PropertyAccess[] = [];
+  const lines = file.blanked.split('\n');
+  for (let ln = startLine; ln <= Math.min(endLine, lines.length); ln += 1) {
+    const text = lines[ln - 1] ?? '';
+    if (/^\s*(?:import|export)\b/.test(text)) continue;
+    if (/^\s*(?:const|let|var)\s+[\w$]+\s*=\s*\{/.test(text) && !/\?\./.test(text)) continue;
+    CHAIN_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CHAIN_RE.exec(text)) !== null) {
+      const base = m[1];
+      if (STOPWORDS.has(base)) continue;
+      if (base === 'this' || base === 'super') continue;
+      const parts = [base, m[3]];
+      if (m[4]) parts.push(m[4]);
+      if (parts.some((p) => STOPWORDS.has(p))) continue;
+      out.push({
+        chain: parts,
+        file: file.rel,
+        line: ln,
+        snippet: text.trim().slice(0, 200),
+      });
+    }
+  }
+  return out;
+}
+
+/** Finds the enclosing top-level function of a line, if any. */
+function enclosingFunction(file: IndexedFile, line: number): { name: string | null; start: number; end: number } {
+  const lines = file.blanked.split('\n');
+  for (let ln = line; ln >= 1; ln -= 1) {
+    const text = lines[ln - 1] ?? '';
+    const m = /(?:export\s+)?(?:const|let|var|async\s+function|function)\s+([A-Za-z_$][\w$]*)\s*[=(]/.exec(text)
+      ?? /(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/.exec(text);
+    if (!m) continue;
+    const startOffset = lineAt(file.blanked, 0);
+    void startOffset;
+    // End = the next top-level-ish definition or end of file.
+    let end = file.lines.length;
+    for (let k = ln + 1; k <= file.lines.length; k += 1) {
+      const t = lines[k - 1] ?? '';
+      if (/^(?:export\s+)?(?:const|let|var|async\s+function|function|class)\s/.test(t)) { end = k - 1; break; }
+    }
+    return { name: m[1], start: ln, end };
+  }
+  return { name: null, start: 1, end: file.lines.length };
+}
+
+function collectClientCalls(file: IndexedFile): ClientCall[] {
+  const out: ClientCall[] = [];
+  if (!/\.[cm]?[jt]sx?$/.test(file.rel)) return out;
+  const fileEnvRefs = collectEnvRefs(file);
+
+  for (const { client, re } of CLIENT_CALL_PATTERNS) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(file.blanked)) !== null) {
+      const line = lineAt(file.blanked, m.index);
+      const fn = enclosingFunction(file, line);
+      const argStart = file.blanked.indexOf('(', m.index);
+      const argEnd = argStart === -1 ? -1 : (() => {
+        let depth = 0;
+        for (let i = argStart; i < file.blanked.length; i += 1) {
+          if (file.blanked[i] === '(') depth += 1;
+          else if (file.blanked[i] === ')') { depth -= 1; if (depth === 0) return i; }
+        }
+        return -1;
+      })();
+      const urlExpression = argEnd === -1
+        ? file.source.slice(argStart + 1, argStart + 160)
+        : file.source.slice(argStart + 1, argEnd);
+      const urlMatch = /(?:['"`])([^'"`$]*)['"`]/.exec(urlExpression);
+      const url = urlMatch ? urlMatch[1] : null;
+      const method = m[1] ? m[1].toUpperCase() : 'GET';
+
+      out.push({
+        id: id('cc'),
+        client,
+        method,
+        file: file.rel,
+        line,
+        urlExpression: urlExpression.trim().slice(0, 200),
+        url,
+        envRefs: fileEnvRefs.filter((r) => r.line >= fn.start && r.line <= fn.end),
+        functionName: fn.name,
+        functionStart: fn.start,
+        functionEnd: fn.end,
+        accesses: collectPropertyAccesses(file, fn.start, fn.end),
+        responseVars: [],
+      });
+    }
+  }
+  return out;
+}
+
+function collectSqlArtifacts(file: IndexedFile): { tables: TableDef[]; queries: QueryRef[] } {
+  const tables: TableDef[] = [];
+  const queries: QueryRef[] = [];
+  const isSql = path.extname(file.rel).toLowerCase() === '.sql';
+  const isPrisma = path.basename(file.rel) === 'schema.prisma';
+
+  if (isSql || file.source.toUpperCase().includes('CREATE TABLE')) {
+    CREATE_TABLE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CREATE_TABLE.exec(file.source)) !== null) {
+      const line = lineAt(file.source, m.index);
+      const body = m[2];
+      const columns: TableDef['columns'] = [];
+      for (const rawLine of body.split('\n')) {
+        const t = rawLine.trim();
+        if (!t || /^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT|INDEX|KEY)\b/i.test(t)) continue;
+        const cm = /^["'`]?(\w+)["'`]?\s+([A-Za-z][\w()\[\], ]*)/.exec(t);
+        if (!cm) continue;
+        columns.push({ name: cm[1], type: cm[2].trim().replace(/\s+/g, ' ').slice(0, 40), line });
+      }
+      tables.push({ name: m[1], file: file.rel, line, columns, source: 'sql' });
+    }
+  }
+
+  if (isPrisma) {
+    const re = /model\s+(\w+)\s*\{([\s\S]*?)\n\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(file.source)) !== null) {
+      const fields: ModelDef['fields'] = [];
+      PRISMA_FIELD.lastIndex = 0;
+      let fm: RegExpExecArray | null;
+      while ((fm = PRISMA_FIELD.exec(m[2])) !== null) {
+        fields.push({ name: fm[1], type: fm[2], line: lineAt(file.source, m.index + fm.index) });
+      }
+      tables.push({ name: m[1], file: file.rel, line: lineAt(file.source, m.index), columns: fields, source: 'orm' });
+    }
+  }
+
+  PREPARED_SQL.lastIndex = 0;
+  let q: RegExpExecArray | null;
+  while ((q = PREPARED_SQL.exec(file.source)) !== null) {
+    const sql = q[2].replace(/\s+/g, ' ').trim();
+    queries.push({
+      file: file.rel,
+      line: lineAt(file.source, q.index),
+      sql: sql.slice(0, 400),
+      tables: extractTables(sql),
+      columns: extractColumns(sql),
+    });
+  }
+
+  return { tables, queries };
+}
+
+export function extractTables(sql: string): string[] {
+  const out: string[] = [];
+  const re = /\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+["'`]?(\w+)["'`]?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) out.push(m[1]);
+  return [...new Set(out)];
+}
+
+export function extractColumns(sql: string): string[] {
+  const out = new Set<string>();
+  // projection list: SELECT a, b AS c FROM
+  const proj = /SELECT\s+(?:DISTINCT\s+)?([\s\S]*?)\s+FROM\s/i.exec(sql);
+  if (proj) {
+    for (const part of proj[1].split(',')) {
+      const t = part.trim();
+      if (!t || t === '*') continue;
+      const alias = /\s+AS\s+["'`]?(\w+)["'`]?$/i.exec(t);
+      const dot = /["'`]?(\w+)["'`]?\.\s*["'`]?(\w+)["'`]?$/.exec(t);
+      if (alias) out.add(alias[1]);
+      else if (dot) out.add(dot[2]);
+      else if (/^\w+$/.test(t)) out.add(t);
+    }
+  }
+  // SET clause: UPDATE t SET a = ?, b = ?
+  const set = /\bSET\s+([\s\S]*?)(?:\bWHERE\b|$)/i.exec(sql);
+  if (set) {
+    for (const part of set[1].split(',')) {
+      const m = /^\s*["'`]?(\w+)["'`]?\s*=/.exec(part);
+      if (m) out.add(m[1]);
+    }
+  }
+  // WHERE equality
+  const where = /\bWHERE\s+([\s\S]*?)$/i.exec(sql);
+  if (where) {
+    for (const m of where[1].matchAll(/["'`]?(\w+)["'`]?\s*=/g)) out.add(m[1]);
+  }
+  return [...out];
+}
+
+function collectModels(file: IndexedFile): ModelDef[] {
+  const out: ModelDef[] = [];
+  if (!/\.[cm]?[jt]sx?$/.test(file.rel)) return out;
+
+  // Mongoose: new Schema({ ... })
+  const schemaRe = /(\w+)\.model\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*new\s+(?:mongoose\.)?Schema\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = schemaRe.exec(file.blanked)) !== null) {
+    const fields: ModelDef['fields'] = [];
+    MONGOOSE_FIELD.lastIndex = 0;
+    let fm: RegExpExecArray | null;
+    while ((fm = MONGOOSE_FIELD.exec(file.source)) !== null) {
+      fields.push({ name: fm[1], type: fm[2], line: lineAt(file.source, fm.index) });
+    }
+    out.push({ name: m[2], file: file.rel, line: lineAt(file.blanked, m.index), fields, orm: 'mongoose' });
+  }
+
+  // Sequelize: Model.init / define
+  const seqRe = /(\w+)\.(?:init|define)\s*\(\s*['"`]([^'"`]+)['"`]/g;
+  while ((m = seqRe.exec(file.blanked)) !== null) {
+    const fields: ModelDef['fields'] = [];
+    SEQUELIZE_FIELD.lastIndex = 0;
+    let fm: RegExpExecArray | null;
+    while ((fm = SEQUELIZE_FIELD.exec(file.source)) !== null) {
+      fields.push({ name: fm[1], type: fm[2], line: lineAt(file.source, fm.index) });
+    }
+    out.push({ name: m[2], file: file.rel, line: lineAt(file.blanked, m.index), fields, orm: 'sequelize' });
+  }
+
+  return out;
+}
+
+function collectEnvDeclarations(file: IndexedFile): EnvDeclaration[] {
+  const out: EnvDeclaration[] = [];
+  const base = path.basename(file.rel);
+  if (!base.startsWith('.env')) return out;
+  const lines = file.source.split('\n');
+  lines.forEach((raw, i) => {
+    const t = raw.trim();
+    if (!t || t.startsWith('#')) return;
+    const m = ENV_DECL_PATTERN.exec(t);
+    if (!m) return;
+    let value = m[2].trim();
+    // Never retain a real secret value in memory beyond the declaration line.
+    if (/KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL/i.test(m[1])) value = '<redacted>';
+    out.push({ name: m[1], file: file.rel, line: i + 1, value: value.slice(0, 120) });
+  });
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Similarity                                                         */
+/* ------------------------------------------------------------------ */
+
+function normalise(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length || !b.length) return Math.max(a.length, b.length);
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = curr;
+  }
+  return prev[b.length];
+}
+
+/**
+ * 0..1. Combines exact match, edit distance, token overlap and a small
+ * general-purpose lexicon of domain synonyms. Used only to *rank* a rename
+ * hypothesis — never on its own to assert one.
+ */
+export function nameSimilarity(a: string, b: string): { score: number; via: string } {
+  if (a === b) return { score: 1, via: 'exact' };
+  const na = normalise(a);
+  const nb = normalise(b);
+  if (na === nb) return { score: 0.97, via: 'normalised' };
+
+  const dist = levenshtein(na, nb);
+  const editScore = 1 - dist / Math.max(na.length, nb.length, 1);
+  if (editScore >= 0.75) return { score: 0.8, via: 'edit-distance' };
+
+  const ta = new Set(na.split('_').filter(Boolean));
+  const tb = new Set(nb.split('_').filter(Boolean));
+  const overlap = [...ta].filter((t) => tb.has(t)).length;
+  const jaccard = overlap / Math.max(1, new Set([...ta, ...tb]).size);
+  if (jaccard > 0) return { score: 0.4 + 0.4 * jaccard, via: 'token-overlap' };
+
+  for (const group of SEMANTIC_GROUPS) {
+    const aIn = group.some((g) => g === na || na.includes(g));
+    const bIn = group.some((g) => g === nb || nb.includes(g));
+    if (aIn && bIn) return { score: 0.55, via: 'domain-lexicon' };
+  }
+
+  return { score: 0, via: 'none' };
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API                                                          */
+/* ------------------------------------------------------------------ */
+
+export async function buildCodeIndex(root: string): Promise<CodeIndex> {
+  const walk = await walkProject(root);
+  const files = new Map<string, IndexedFile>();
+  const languageBreakdown: Record<string, number> = {};
+  let totalBytes = 0;
+
+  for (const entry of walk.entries) {
+    const source = await readTextFile(entry.abs);
+    const language = languageOf(entry.rel);
+    const layer = CONFIG_FILES.has(path.basename(entry.rel)) ? 'config' : classifyLayer(entry.rel);
+    languageBreakdown[language] = (languageBreakdown[language] ?? 0) + 1;
+    totalBytes += entry.bytes;
+    files.set(entry.rel, {
+      rel: entry.rel,
+      layer,
+      language,
+      bytes: entry.bytes,
+      source,
+      blanked: blankNonCode(source),
+      lines: source.split('\n'),
+    });
+  }
+
+  const routes: RouteDef[] = [];
+  const clientCalls: ClientCall[] = [];
+  const symbols = new Map<string, SymbolDef[]>();
+  const envRefs: EnvRef[] = [];
+  const envDeclarations: EnvDeclaration[] = [];
+  const tables: TableDef[] = [];
+  const models: ModelDef[] = [];
+  const queries: QueryRef[] = [];
+  const tests: TestDef[] = [];
+  const importEdges: ImportEdge[] = [];
+
+  for (const file of files.values()) {
+    for (const route of collectRoutes(file)) routes.push(route);
+    for (const call of collectClientCalls(file)) clientCalls.push(call);
+    for (const sym of collectSymbols(file)) {
+      const list = symbols.get(sym.name) ?? [];
+      list.push(sym);
+      symbols.set(sym.name, list);
+    }
+    envRefs.push(...collectEnvRefs(file));
+    envDeclarations.push(...collectEnvDeclarations(file));
+    const sql = collectSqlArtifacts(file);
+    tables.push(...sql.tables);
+    queries.push(...sql.queries);
+    models.push(...collectModels(file));
+    tests.push(...collectTests(file));
+    importEdges.push(...collectImports(file));
+  }
+
+  // Resolve relative import specifiers to real files.
+  for (const edge of importEdges) {
+    const fromDir = path.posix.dirname(edge.from);
+    if (!edge.specifier.startsWith('.')) {
+      edge.to = edge.specifier; // bare specifier — record for reporting
+      continue;
+    }
+    const base = path.posix.normalize(path.posix.join(fromDir === '.' ? '' : fromDir, edge.specifier));
+    const candidates = [
+      base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}.mjs`,
+      `${base}.cjs`, `${base}.json`, `${base}/index.ts`, `${base}/index.js`,
+    ];
+    edge.to = candidates.find((c) => files.has(c)) ?? base;
+  }
+
+  const pkg = await readPackageInfo(root);
+  const frameworks = detectFrameworks(pkg.dependencies, files);
+
+  const index: CodeIndex = {
+    root,
+    generatedAt: nowIso(),
+    files,
+    fileCount: files.size,
+    totalBytes,
+    languageBreakdown,
+    truncated: walk.truncated,
+    routes,
+    clientCalls,
+    symbols,
+    envRefs,
+    envDeclarations,
+    tables,
+    models,
+    queries,
+    tests,
+    importEdges,
+    packageManager: pkg.packageManager,
+    scripts: pkg.scripts,
+    dependencies: pkg.dependencies,
+    frameworks,
+    testRunner: detectTestRunner(pkg, files),
+    entryPoints: Object.entries(pkg.scripts)
+      .filter(([name]) => /^(dev|start|serve|build|test)$/.test(name))
+      .map(([name, command]) => ({ name, command })),
+  };
+
+  return index;
+}
+
+export async function readPackageInfo(root: string): Promise<{
+  scripts: Record<string, string>;
+  dependencies: string[];
+  packageManager: string;
+}> {
+  const pkgPath = path.join(root, 'package.json');
+  try {
+    const raw = JSON.parse(await readTextFile(pkgPath)) as {
+      scripts?: Record<string, string>;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    return {
+      scripts: raw.scripts ?? {},
+      dependencies: [...Object.keys(raw.dependencies ?? {}), ...Object.keys(raw.devDependencies ?? {})],
+      packageManager: 'npm',
+    };
+  } catch {
+    return { scripts: {}, dependencies: [], packageManager: 'npm' };
+  }
+}
+
+function detectFrameworks(dependencies: string[], files: Map<string, IndexedFile>): string[] {
+  const found = new Set<string>();
+  for (const sig of FRAMEWORK_SIGNATURES) {
+    if (sig.deps.some((d) => dependencies.includes(d))) {
+      found.add(sig.name);
+      continue;
+    }
+    if (sig.files) {
+      for (const file of files.values()) {
+        if (sig.files.test(file.rel) || sig.files.test(file.source)) {
+          found.add(sig.name);
+          break;
+        }
+      }
+    }
+  }
+  return [...found];
+}
+
+function detectTestRunner(
+  pkg: { scripts: Record<string, string>; dependencies: string[] },
+  files: Map<string, IndexedFile>,
+): string {
+  if (pkg.dependencies.includes('vitest')) return 'vitest';
+  if (pkg.dependencies.includes('jest')) return 'jest';
+  if (pkg.dependencies.includes('mocha')) return 'mocha';
+  for (const file of files.values()) {
+    if (/from ['"]node:test['"]|require\(['"]node:test['"]\)/.test(file.source)) return 'node:test';
+  }
+  if (Object.keys(pkg.scripts).some((s) => /test/.test(s))) return 'npm script';
+  return 'none';
+}
+
+/* ------------------------------------------------------------------ */
+/* Project map (STEP 2 of the workflow)                                */
+/* ------------------------------------------------------------------ */
+
+export function buildProjectMap(index: CodeIndex): ProjectMap {
+  const components: ProjectComponent[] = [];
+
+  const groups: { layer: ProjectLayer; label: string; role: string }[] = [
+    { layer: 'frontend', label: 'Frontend', role: 'User-facing interface, renders views and issues API calls' },
+    { layer: 'backend', label: 'Backend', role: 'Server-side request handling and business logic' },
+    { layer: 'api', label: 'API routes', role: 'HTTP entry points' },
+    { layer: 'database', label: 'Database', role: 'Schemas, models and queries' },
+    { layer: 'tests', label: 'Tests', role: 'Automated test suites' },
+    { layer: 'config', label: 'Configuration', role: 'Build, runtime and environment configuration' },
+    { layer: 'docs', label: 'Documentation', role: 'Project documentation' },
+    { layer: 'scripts', label: 'Scripts', role: 'Automation and tooling' },
+  ];
+
+  for (const group of groups) {
+    const sourceFiles = group.layer === 'api'
+      ? [...new Set(index.routes.map((r) => r.file))]
+      : [...index.files.values()].filter((f) => f.layer === group.layer).map((f) => f.rel);
+    if (sourceFiles.length === 0) continue;
+    const dominant = dominantLanguage(index, sourceFiles);
+    components.push({
+      id: `${group.layer}-${sourceFiles.length}`,
+      layer: group.layer,
+      name: `${group.label} (${sourceFiles.length} files)`,
+      role: group.role,
+      files: sourceFiles.slice(0, 60),
+      language: dominant,
+    });
+  }
+
+  return {
+    root: toPosix(index.root),
+    generatedAt: nowIso(),
+    fileCount: index.fileCount,
+    totalBytes: index.totalBytes,
+    languageBreakdown: index.languageBreakdown,
+    entryPoints: index.entryPoints,
+    components,
+    path: buildExecutionPath(index),
+    packageManager: index.packageManager,
+    testRunner: index.testRunner,
+    frameworks: index.frameworks,
+    notes: [
+      `${index.fileCount} files analysed, ${index.languageBreakdown.TypeScript ?? 0} TypeScript / ${index.languageBreakdown.JavaScript ?? 0} JavaScript`,
+      `${index.routes.length} HTTP routes, ${index.clientCalls.length} outbound client calls, ${index.tests.length} test cases`,
+      `Test runner: ${index.testRunner}`,
+      index.truncated ? 'File budget reached — analysis is partial and findings are marked accordingly.' : 'Full project walk completed within budget.',
+    ],
+  };
+}
+
+function dominantLanguage(index: CodeIndex, files: string[]): string {
+  const counts: Record<string, number> = {};
+  for (const f of files) {
+    const lang = index.files.get(f)?.language;
+    if (lang) counts[lang] = (counts[lang] ?? 0) + 1;
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Unknown';
+}
+
+/** Frontend → API client → route → handler → service → data/external → response. */
+export function buildExecutionPath(index: CodeIndex): ExecutionPathEdge[] {
+  const edges: ExecutionPathEdge[] = [];
+  const seen = new Set<string>();
+  const push = (edge: ExecutionPathEdge) => {
+    const k = `${edge.from}->${edge.to}:${edge.relation}`;
+    if (!seen.has(k)) { seen.add(k); edges.push(edge); }
+  };
+
+  // Match client calls to declared routes by path shape.
+  for (const call of index.clientCalls) {
+    const target = matchRoute(index.routes, call.url ?? call.urlExpression);
+    if (!target) continue;
+    push({ from: call.file, to: `${target.method} ${target.path}`, relation: 'requests', location: { file: call.file, line: call.line } });
+    push({ from: `${target.method} ${target.path}`, to: `${target.file}${target.handler ? `#${target.handler}` : ''}`, relation: 'calls', location: { file: target.file, line: target.line } });
+    for (const sql of target.sql) {
+      push({ from: target.file, to: `SQL: ${sql.slice(0, 60)}`, relation: 'reads' });
+    }
+  }
+
+  // File-level import edges restricted to internal modules.
+  for (const edge of index.importEdges) {
+    if (!edge.specifier.startsWith('.')) continue;
+    if (!index.files.has(edge.to)) continue;
+    push({ from: edge.from, to: edge.to, relation: 'calls', location: { file: edge.from, line: edge.line } });
+  }
+
+  return edges.slice(0, 400);
+}
+
+/** Matches a client URL against declared routes, tolerating prefixes and params. */
+export function matchRoute(routes: RouteDef[], url: string | null | undefined): RouteDef | null {
+  if (!url) return null;
+  const cleaned = url.split('?')[0].split('#')[0].replace(/^https?:\/\/[^/]+/i, '').replace(/\/$/, '');
+  if (!cleaned || cleaned === '/') return null;
+  const segments = cleaned.split('/').filter(Boolean);
+  const candidates = routes.filter((r) => {
+    const rSeg = r.path.split('?')[0].split('/').filter(Boolean);
+    if (rSeg.length === 0) return segments.length === 0;
+    if (rSeg.length !== segments.length) return false;
+    return rSeg.every((seg, i) => seg.startsWith(':') || seg === '*' || seg === segments[i]);
+  });
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => scoreRoute(b.path, segments) - scoreRoute(a.path, segments))[0];
+}
+
+function scoreRoute(routePath: string, segments: string[]): number {
+  const rSeg = routePath.split('/').filter(Boolean);
+  let score = 0;
+  for (let i = 0; i < rSeg.length; i += 1) {
+    if (rSeg[i].startsWith(':')) score += 0.5;
+    else if (rSeg[i] === segments[i]) score += 1;
+  }
+  return score;
+}
+
+export { normalise, levenshtein, toPosix };
+export const __testing = { objectKeys, collectPropertyAccesses, enclosingFunction, classifyLayer };
+void config;
