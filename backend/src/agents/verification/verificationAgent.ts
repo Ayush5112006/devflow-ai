@@ -118,16 +118,19 @@ export async function runVerificationAgent(
 
       beforeAfter = {
         bugReproduction: {
+          command: reproCmd,
           expected: ctx.bug.expectedBehavior,
           observed: ctx.bug.actualBehavior,
+          failure: ctx.bug.actualBehavior,
           status: 'fail' as const,
         },
         postFix: {
+          command: reproCmd,
           expected: ctx.bug.expectedBehavior,
           observed: result.exitCode === 0
             ? ctx.bug.expectedBehavior
             : ctx.bug.actualBehavior,
-          status: reproStatus,
+          result: reproStatus === 'pass' ? 'PASS' : 'FAIL',
         },
         capturedAt: nowIso(),
       };

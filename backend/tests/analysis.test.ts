@@ -192,6 +192,24 @@ test('indexer sees the demo routes, clients and tables', async () => {
   assert.ok(index.clientCalls.some((c) => c.url === '/api/predictions'), 'helper URL resolution');
 });
 
+test('a URL builder parameter becomes a wildcard, not a dropped segment', async () => {
+  const index = await buildCodeIndex(DEMO_ROOT);
+  // `predictionUrl(id)` inlines to `${API_BASE}/api/predictions/${id}`.
+  const detail = index.clientCalls.find(
+    (c) => c.file === 'web/app.js' && c.helper?.startsWith('predictionUrl@'),
+  );
+  assert.equal(detail?.url, '/api/predictions/*');
+  const route = matchRoute(index.routes, detail?.url);
+  assert.equal(route?.path, '/api/predictions/:id');
+});
+
+test('response shapes resolve the nested value behind a response key', async () => {
+  const index = await buildCodeIndex(DEMO_ROOT);
+  const orders = index.routes.find((r) => r.path === '/api/orders/:id');
+  assert.deepEqual(orders?.responseKeys.map((k) => k.name), ['error', 'order']);
+  assert.ok(orders?.responseShapes.order, `no shape resolved: ${JSON.stringify(orders?.responseShapes)}`);
+});
+
 void pathToFileURL;
 void TEMPLATE_URL;
 void TEMPLATE_BASE;

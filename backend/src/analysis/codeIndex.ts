@@ -772,7 +772,7 @@ function resolveUrlArgument(expr: string, helpers?: Map<string, { template: stri
 function normaliseUrlTemplate(raw: string): string {
   const withWildcards = raw.replace(
     /\/(\s*)\$\{[^}]*\}|\$\{[^}]*\}/g,
-    (match, slash: string | undefined) => (slash ? '/*' : ''),
+    (match) => (match.trimStart().startsWith('/') ? '/*' : ''),
   );
   return withWildcards.replace(/\/\/+/g, '/');
 }
