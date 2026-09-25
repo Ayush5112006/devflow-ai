@@ -45,6 +45,7 @@ export type InvestigationStatus =
   | 'draft'
   | 'investigating'
   | 'awaiting_approval'
+  | 'approved'
   | 'implementing'
   | 'verifying'
   | 'regressing'

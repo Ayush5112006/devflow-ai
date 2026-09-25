@@ -19,7 +19,8 @@ import type { AgentDefinition } from '../agents/types.js';
 
 const log = createLogger('investigation-service');
 
-type EventEmitter = (event: InvestigationEvent) => void;
+type AnyEvent = { type: string; investigationId: string; at: string; payload: unknown };
+type EventEmitter = (event: AnyEvent) => void;
 
 /**
  * InvestigationService
@@ -314,7 +315,7 @@ export class InvestigationService {
     this.activity(inv, 'manager',
       inv.regression.status === 'clean' ? 'success' : 'warn',
       `Regression analysis: ${inv.regression.summary}`);
-    this.emit(inv, 'regression:done', { regression: inv.regression });
+    this.emit(inv, 'regression.updated', { regression: inv.regression });
     this.finishStage(inv, 'regression');
   }
 
@@ -323,7 +324,7 @@ export class InvestigationService {
     this.activity(inv, 'manager', 'info', 'Generating final engineering report');
     inv.report = generateReport(inv);
     inv.metrics = computeMetrics(inv);
-    this.emit(inv, 'report:ready', { report: inv.report, metrics: inv.metrics });
+    this.emit(inv, 'report.updated', { report: inv.report, metrics: inv.metrics });
     this.finishStage(inv, 'report');
   }
 

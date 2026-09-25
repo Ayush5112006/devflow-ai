@@ -304,6 +304,8 @@ export interface FunctionRange {
   endLine: number;
   startOffset: number;
   endOffset: number;
+  /** Declared parameter names, in order, when they could be read. */
+  params?: string[];
 }
 
 /**

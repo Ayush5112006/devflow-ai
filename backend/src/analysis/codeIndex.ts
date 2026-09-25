@@ -157,6 +157,8 @@ export interface CodeIndex {
   truncated: boolean;
   routes: RouteDef[];
   clientCalls: ClientCall[];
+  /** Property reads traced back to a route's response shape. */
+  contractChecks: ContractCheck[];
   symbols: Map<string, SymbolDef[]>;
   envRefs: EnvRef[];
   envDeclarations: EnvDeclaration[];
@@ -518,6 +520,35 @@ function collectPropertyAccesses(
   return out;
 }
 
+/**
+ * Reads property chains of any depth from the strings-kept view.
+ *
+ * `collectPropertyAccesses` works on the fully blanked view, which is right for
+ * structural analysis but blind to two things that matter when checking a
+ * response contract: reads inside `${…}` interpolations, and chains longer than
+ * three segments. Both are exactly where "one level too deep" bugs live.
+ */
+function collectChains(file: IndexedFile): PropertyAccess[] {
+  const out: PropertyAccess[] = [];
+  const lines = file.code.split('\n');
+  const chainRe = /\b([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*)+)/g;
+  for (let ln = 1; ln <= lines.length; ln += 1) {
+    const text = lines[ln - 1] ?? '';
+    if (/^\s*(?:import|export)\b/.test(text)) continue;
+    chainRe.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = chainRe.exec(text)) !== null) {
+      const base = m[1];
+      if (STOPWORDS.has(base) || base === 'this' || base === 'super') continue;
+      const chain = [base, ...m[2].split('.').filter(Boolean)];
+      if (chain.length < 2) continue;
+      if (chain.slice(1).some((p) => STOPWORDS.has(p))) continue;
+      out.push({ chain, file: file.rel, line: ln, snippet: text.trim().slice(0, 200) });
+    }
+  }
+  return out;
+}
+
 /** Declaration shapes we treat as a function/method boundary. */
 const FN_DECL_PATTERNS: RegExp[] = [
   /(?:^|[^\w$.])(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g,
@@ -569,7 +600,14 @@ export function collectFunctionRanges(blanked: string): FunctionRange[] {
       const key = `${startLine}:${endLine}:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ name, startLine, endLine, startOffset: declStart, endOffset: close });
+      out.push({
+        name,
+        startLine,
+        endLine,
+        startOffset: declStart,
+        endOffset: close,
+        params: readParams(blanked, parenStart, parenEnd),
+      });
       pattern.lastIndex = close;
     }
   }
@@ -594,6 +632,16 @@ export function collectFunctionRanges(blanked: string): FunctionRange[] {
   }
 
   return out.sort((x, y) => (x.endOffset - x.startOffset) - (y.endOffset - y.startOffset));
+}
+
+/** Reads declared parameter names out of a parameter list. */
+function readParams(blanked: string, parenStart: number, parenEnd: number): string[] {
+  const list = blanked.slice(parenStart + 1, parenEnd);
+  if (!list.trim()) return [];
+  return list.split(',').map((raw) => {
+    const cleaned = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').trim();
+    return cleaned.split(/[:=]/)[0].trim().replace(/^\.\.\./, '').trim();
+  }).filter((p) => /^[A-Za-z_$][\w$]*$/.test(p));
 }
 
 /** Innermost function containing a line, or a whole-file fallback. */
@@ -1209,6 +1257,7 @@ export async function buildCodeIndex(root: string): Promise<CodeIndex> {
     truncated: walk.truncated,
     routes,
     clientCalls,
+    contractChecks: [],
     symbols,
     envRefs,
     envDeclarations,
@@ -1226,6 +1275,9 @@ export async function buildCodeIndex(root: string): Promise<CodeIndex> {
       .filter(([name]) => /^(dev|start|serve|build|test)$/.test(name))
       .map(([name, command]) => ({ name, command })),
   };
+
+  // Needs the finished routes, so it runs last.
+  index.contractChecks = buildContractChecks(index);
 
   return index;
 }
@@ -1387,52 +1439,182 @@ export interface ValueShape {
   keys: string[];
   file: string;
   line: number;
+  /** How the keys were established, e.g. `return {…}` or `SELECT`. */
+  origin: string;
   table: string | null;
 }
 
+interface FunctionInfo {
+  name: string;
+  file: string;
+  range: FunctionRange;
+  body: string;
+  blankedBody: string;
+  bodyOffset: number;
+}
+
 /**
- * Infers the shape of values that come out of a database query.
+ * Infers the shape of the values functions return.
  *
- * A function whose body contains a query against exactly one table has the
- * shape of that table's projection. This is what lets the API agent notice
- * that a client reading `prediction.prediction.label` is asking one level too
- * deep, without any hand-written knowledge of the application.
+ * Three passes, strongest evidence first:
+ *
+ *  1. `return { … }` — the function literally shows the keys it produces.
+ *  2. A `SELECT` — a function that hands a row straight to the caller has the
+ *     shape of the columns that query reads (resolved per table, so a JOIN is
+ *     fine).
+ *  3. Delegation — a function whose body only does `return other(…)` inherits
+ *     `other`'s shape.
+ *
+ * This is what lets the API agent see that a client reading
+ * `prediction.prediction.label` is asking one level too deep, with no
+ * hand-written knowledge of the application.
  */
 export function buildValueShapes(
   files: Map<string, IndexedFile>,
   queries: QueryRef[],
   tables: TableDef[],
 ): Map<string, ValueShape> {
-  const tableColumns = new Map(tables.map((t) => [t.name, t.columns.map((c) => c.name)]));
-  const rangesByFile = new Map<string, FunctionRange[]>();
   const out = new Map<string, ValueShape>();
+  const ambiguous = new Set<string>();
+  const strength = new Map<string, number>();
 
-  for (const query of queries) {
-    if (query.tables.length !== 1) continue;
-    const table = query.tables[0];
-    const declared = tableColumns.get(table);
-    if (!declared) continue;
+  // Strongest evidence wins. A function that maps a row into a view literal and
+  // also holds the query that fed it must be described by the literal, not by
+  // the raw projection it was built from.
+  const LIT = 3;
+  const DELEGATED = 2;
+  const QUERY = 1;
 
-    const refs = (query.columnRefs ?? [])
-      .filter((r) => r.table === table)
-      .map((r) => r.column)
-      .filter((c) => declared.includes(c));
-    if (refs.length === 0) continue;
-
-    let ranges = rangesByFile.get(query.file);
-    if (!ranges) {
-      const file = files.get(query.file);
-      if (!file) continue;
-      ranges = collectFunctionRanges(file.blanked);
-      rangesByFile.set(query.file, ranges);
+  /* ---- Pass 0: index every function body once ---- */
+  const functions: FunctionInfo[] = [];
+  for (const [rel, file] of files) {
+    if (!/\.[cm]?[jt]sx?$/.test(rel)) continue;
+    const ranges = collectFunctionRanges(file.blanked);
+    for (const range of ranges) {
+      if (!range.name) continue;
+      functions.push({
+        name: range.name,
+        file: rel,
+        range,
+        body: file.source.slice(range.startOffset, range.endOffset + 1),
+        blankedBody: file.blanked.slice(range.startOffset, range.endOffset + 1),
+        bodyOffset: range.startOffset,
+      });
     }
-    const fn = enclosingFunctionRange(ranges, query.line, files.get(query.file)?.lines.length ?? query.line);
-    if (!fn.name) continue;
-
-    const existing = out.get(fn.name);
-    if (existing && !sameKeySet(existing.keys, refs)) continue; // ambiguous
-    out.set(fn.name, { keys: refs, file: query.file, line: fn.start, table });
   }
+
+  const setShape = (
+    name: string,
+    keys: string[],
+    origin: string,
+    table: string | null,
+    file: string,
+    line: number,
+    rank: number,
+  ): void => {
+    const current = strength.get(name) ?? 0;
+    if (ambiguous.has(name) && rank <= current) return;
+
+    const existing = out.get(name);
+    if (existing && rank === current) {
+      // Two equally strong but different answers mean we do not know.
+      if (!sameKeySet(existing.keys, keys)) {
+        out.delete(name);
+        ambiguous.add(name);
+      }
+      return;
+    }
+
+    strength.set(name, rank);
+    ambiguous.delete(name);
+    out.set(name, { keys, origin, table, file, line });
+  };
+
+  /* ---- Pass 1: return object literals ---- */
+  for (const fn of functions) {
+    const found: string[][] = [];
+    const re = /\breturn\s*\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(fn.blankedBody)) !== null) {
+      const brace = m.index + m[0].length - 1;
+      const keys = objectKeys(fn.body, fn.blankedBody, brace).map((k) => k.name);
+      if (keys.length > 0) found.push(keys);
+    }
+    if (found.length === 0) continue;
+    const first = found[0];
+    if (found.some((k) => !sameKeySet(k, first))) {
+      if (!out.has(fn.name)) {
+        ambiguous.add(fn.name);
+        strength.set(fn.name, LIT);
+      }
+      continue;
+    }
+    setShape(fn.name, first, 'return {…}', null, fn.file, fn.range.startLine, LIT);
+  }
+
+  /* ---- Pass 2: query projections ---- */
+  const declaredColumns = new Map(tables.map((t) => [t.name, new Set(t.columns.map((c) => c.name))]));
+  for (const query of queries) {
+    const keys: string[] = [];
+    const contributing: string[] = [];
+    for (const ref of query.columnRefs ?? []) {
+      if (!ref.table) continue; // unattributable column
+      const declared = declaredColumns.get(ref.table);
+      if (!declared || !declared.has(ref.column)) continue;
+      if (!keys.includes(ref.column)) {
+        keys.push(ref.column);
+        contributing.push(ref.table);
+      }
+    }
+    if (keys.length === 0) continue;
+
+    const fn = functions.find(
+      (f) => f.file === query.file && f.range.startLine <= query.line && query.line <= f.range.endLine,
+    );
+    if (!fn) continue;
+    setShape(
+      fn.name,
+      keys.sort(),
+      `SELECT from ${[...new Set(contributing)].join(' + ')}`,
+      contributing.length === 1 ? contributing[0] : null,
+      fn.file,
+      fn.range.startLine,
+      QUERY,
+    );
+  }
+
+  /* ---- Pass 3: delegation, to a fixpoint ---- */
+  for (let depth = 0; depth < 4; depth += 1) {
+    let changed = false;
+    for (const fn of functions) {
+      // Delegation outranks a raw projection: `return row ? toView(row) : null`
+      // returns the view, not the row.
+      if ((strength.get(fn.name) ?? 0) > DELEGATED) continue;
+      // `return other(…)`, optionally behind a guard: `return row ? other(row) : null`.
+      const re = /\breturn\s+[^;{}]*?\b([A-Za-z_$][\w$]*)\s*\(/g;
+      let m: RegExpExecArray | null;
+      const delegated = new Set<string>();
+      while ((m = re.exec(fn.blankedBody)) !== null) delegated.add(m[1]);
+
+      for (const target of delegated) {
+        const shape = out.get(target);
+        if (!shape || target === fn.name) continue;
+        setShape(
+          fn.name,
+          shape.keys,
+          `returns ${target}() (${shape.origin})`,
+          shape.table,
+          shape.file,
+          shape.line,
+          DELEGATED,
+        );
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
+
   return out;
 }
 
@@ -1466,9 +1648,263 @@ export function attachResponseShapes(
       if (!fnName) continue;
       const shape = shapes.get(fnName);
       if (!shape) continue;
-      route.responseShapes[key.name] = { keys: shape.keys, via: `${fnName}() @ ${shape.file}:${shape.line}`, table: shape.table };
+      route.responseShapes[key.name] = {
+        keys: shape.keys,
+        via: `${fnName}() @ ${shape.file}:${shape.line} — ${shape.origin}`,
+        table: shape.table,
+      };
     }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Contract checks                                                     */
+/* ------------------------------------------------------------------ */
+
+/** A value whose keys are known, plus the keys of its immediate children. */
+interface KnownValue {
+  keys: string[];
+  via: string;
+  children: Record<string, { keys: string[]; via: string }>;
+}
+
+export interface ContractCheck {
+  call: ClientCall;
+  route: RouteDef;
+  /** Property chain with the bound local stripped, e.g. `['prediction','label']`. */
+  chain: string[];
+  file: string;
+  line: number;
+  snippet: string;
+  /** How the root value's shape was established. */
+  via: string;
+  /**
+   * Shape at each hop of `chain`. `hops[0]` is the root value itself, so
+   * `hops[i]` describes the value that `chain[i - 1]` would have to produce for
+   * the read at `chain[i]` to succeed. A `null` entry means "not known".
+   */
+  hops: { keys: string[] | null; via: string | null }[];
+  /** The function the read happens in, when it is not the fetching function. */
+  readIn: string | null;
+}
+
+/**
+ * Follows a fetched payload into the functions it is handed to, and records
+ * every property read against what the producer can actually supply.
+ *
+ * A very common shape is `fetch` → `render(payload.item)` → `item.a.b`, where
+ * the interesting read lives one function away from the request. Checking only
+ * the fetching function would miss it, so callee parameters are bound to the
+ * shape of the argument they receive, to a bounded depth.
+ */
+export function buildContractChecks(index: CodeIndex): ContractCheck[] {
+  const out: ContractCheck[] = [];
+
+  const functionsByFile = new Map<string, FunctionInfo[]>();
+  const functionByName = new Map<string, FunctionInfo[]>();
+  const accessesByFile = new Map<string, PropertyAccess[]>();
+  for (const [rel, file] of index.files) {
+    if (!/\.[cm]?[jt]sx?$/.test(rel)) continue;
+    const ranges = collectFunctionRanges(file.blanked);
+    const infos: FunctionInfo[] = [];
+    for (const range of ranges) {
+      if (!range.name) continue;
+      const info: FunctionInfo = {
+        name: range.name,
+        file: rel,
+        range,
+        body: file.source.slice(range.startOffset, range.endOffset + 1),
+        blankedBody: file.blanked.slice(range.startOffset, range.endOffset + 1),
+        bodyOffset: range.startOffset,
+      };
+      infos.push(info);
+      const bucket = functionByName.get(info.name) ?? [];
+      bucket.push(info);
+      functionByName.set(info.name, bucket);
+    }
+    functionsByFile.set(rel, infos);
+    accessesByFile.set(rel, collectChains(file));
+  }
+
+  for (const call of index.clientCalls) {
+    const route = matchRoute(index.routes, call.url ?? call.urlExpression);
+    if (!route) continue;
+
+    const file = index.files.get(call.file);
+    if (!file) continue;
+    const keyNames = route.responseKeys.map((k) => k.name);
+    if (keyNames.length === 0) continue;
+    // A spread payload means the real shape is dynamic — do not guess.
+    if (keyNames.some((n) => n.startsWith('...'))) continue;
+
+    const own = functionsByFile.get(call.file) ?? [];
+    const fetcher = own.find(
+      (f) => f.range.startLine <= call.line && call.line <= f.range.endLine,
+    );
+    if (!fetcher) continue;
+
+    // The local the decoded response body is bound to. This must be the value
+    // after `.json()`, never the `Response` object returned by `fetch`.
+    const root = findPayloadLocal(fetcher, own);
+    if (!root) continue;
+
+    const rootValue: KnownValue = {
+      keys: keyNames.filter((n) => !n.startsWith('...')),
+      via: `${route.method} ${route.path}`,
+      children: {},
+    };
+    for (const [name, shape] of Object.entries(route.responseShapes)) {
+      rootValue.children[name] = { keys: shape.keys, via: shape.via };
+    }
+
+    const bindings = new Map<string, KnownValue>([[root, rootValue]]);
+    const nestedShapes = nestedShapesOf(route);
+    // Local names are function-scoped, so only reads inside the fetching
+    // function and the callees we bound are ours to judge. Without this, an
+    // identically-named local in a sibling function would be checked against
+    // the wrong route.
+    const inScope: FunctionInfo[] = [fetcher];
+
+    /* ---- Follow the payload through local calls, to a bounded depth ---- */
+    for (let depth = 0; depth < 2; depth += 1) {
+      let grew = false;
+      for (const [localName] of [...bindings]) {
+        const caller = depth === 0
+          ? fetcher
+          : own.find((f) => f.range.params?.[0] === localName);
+        if (!caller) continue;
+
+        const callRe = /\b([A-Za-z_$][\w$]*)\s*\(/g;
+        let m: RegExpExecArray | null;
+        while ((m = callRe.exec(caller.blankedBody)) !== null) {
+          const calleeName = m[1];
+          const callees = functionByName.get(calleeName);
+          if (!callees) continue;
+          const open = m.index + m[0].length - 1;
+          const close = matchParen(caller.blankedBody, open);
+          if (close === -1) continue;
+
+          const { first } = splitArguments(caller.body, caller.blankedBody, open, close);
+          const trimmed = first.trim();
+          if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(trimmed)) continue;
+
+          const argChain = trimmed.split('.');
+          const bound = bindings.get(argChain[0]);
+          if (!bound) continue;
+          const resolved = resolveKnownValue(bound, argChain.slice(1), nestedShapes);
+          if (!resolved) continue;
+
+          for (const callee of callees) {
+            const param = callee.range.params?.[0];
+            if (!param || bindings.has(param)) continue;
+            bindings.set(param, resolved);
+            inScope.push(callee);
+            grew = true;
+          }
+        }
+      }
+      if (!grew) break;
+    }
+
+    /* ---- Record every read that starts from a bound value ---- */
+    for (const access of accessesByFile.get(call.file) ?? []) {
+      const [head, ...rest] = access.chain;
+      if (!head) continue;
+      const value = bindings.get(head);
+      if (!value || rest.length === 0) continue;
+
+      const owner = inScope.find(
+        (f) => f.range.startLine <= access.line && access.line <= f.range.endLine,
+      );
+      if (!owner) continue;
+
+      const hops: ContractCheck['hops'] = [{ keys: value.keys, via: value.via }];
+      let children = value.children;
+      for (const seg of rest) {
+        const child = children[seg];
+        if (!child) {
+          hops.push({ keys: null, via: null });
+          break;
+        }
+        hops.push({ keys: child.keys, via: child.via });
+        children = nestedChildren(child, nestedShapes);
+      }
+
+      out.push({
+        call,
+        route,
+        chain: rest,
+        file: access.file,
+        line: access.line,
+        snippet: access.snippet,
+        via: value.via,
+        hops,
+        readIn: owner.name === fetcher.name ? null : owner.name,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Finds the local variable that holds the decoded response body.
+ *
+ * Two accepted forms:
+ *  - `const payload = await response.json()`
+ *  - `const payload = await getJson(url)`, where a local helper decodes it.
+ *
+ * If neither is found we return `null` rather than guessing: binding the wrong
+ * local would turn every contract check into noise.
+ */
+function findPayloadLocal(fetcher: FunctionInfo, siblings: FunctionInfo[]): string | null {
+  const direct = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+[\w$.]*\.json\s*\(\s*\)/.exec(fetcher.blankedBody);
+  if (direct?.[1]) return direct[1];
+
+  const viaHelper = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+([A-Za-z_$][\w$]*)\s*\(/.exec(fetcher.blankedBody);
+  if (!viaHelper) return null;
+  const local = viaHelper[1];
+  const helper = viaHelper[2];
+  const decodes = siblings.some((f) => f.name === helper && /\.json\s*\(/.test(f.blankedBody));
+  return decodes ? local : null;
+}
+
+/** Nested value shapes reachable from a route's response keys. */
+function nestedShapesOf(route: RouteDef): Map<string, { keys: string[]; via: string }> {
+  const map = new Map<string, { keys: string[]; via: string }>();
+  for (const [name, shape] of Object.entries(route.responseShapes)) {
+    map.set(name, { keys: shape.keys, via: shape.via });
+  }
+  return map;
+}
+
+/** The children of a known value that themselves have a known shape. */
+function nestedChildren(
+  value: { keys: string[] },
+  known: Map<string, { keys: string[]; via: string }>,
+): Record<string, { keys: string[]; via: string }> {
+  const out: Record<string, { keys: string[]; via: string }> = {};
+  for (const key of value.keys) {
+    const nested = known.get(key);
+    if (nested) out[key] = { keys: nested.keys, via: nested.via };
+  }
+  return out;
+}
+
+/** Resolves `value.child.grandchild` against a known value, hop by hop. */
+function resolveKnownValue(
+  value: KnownValue,
+  path: string[],
+  known: Map<string, { keys: string[]; via: string }>,
+): KnownValue | null {
+  let current: KnownValue = value;
+  for (const seg of path) {
+    const child = current.children[seg];
+    // An unresolved hop means we cannot know what is further down.
+    if (!child) return null;
+    current = { keys: child.keys, via: child.via, children: nestedChildren(child, known) };
+  }
+  return current;
 }
 
 /** Matches a client URL against declared routes, tolerating prefixes and params. */
