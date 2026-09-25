@@ -1,9 +1,10 @@
-import type { Approval, ChangePlan, PlannedChange, Remediation, RootCause } from '../../types/index.js';
+import type { Approval, ChangePlan, Evidence, PlannedChange, Remediation, RootCause } from '../../types/index.js';
 import { id as makeId } from '../../utils/id.js';
 import { shortHash } from '../../utils/id.js';
 import { nowIso } from '../../utils/time.js';
 import { q } from '../../utils/format.js';
 import type { CodeIndex } from '../../analysis/codeIndex.js';
+import { nameSimilarity } from '../../analysis/codeIndex.js';
 import type { EvidenceExpectation } from '../../analysis/expectations.js';
 
 /**
@@ -110,46 +111,88 @@ function buildApiMismatchRemediation(
     .filter(Boolean)[0];
 
   // Use evidence locations instead.
-  const consumerLoc = hyp.supporting.find((e) => e.kind === 'code' && e.location?.file);
-  const producerLoc = hyp.supporting.find((e) => e.kind === 'code' && e.snippet?.includes('{'));
+  const consumerLoc = hyp.supporting.find((e) => e.kind === 'code' && indexedLocation(index, e));
 
-  if (!consumerLoc?.location?.file) return null;
+  if (!consumerLoc) return null;
+  const consumerAt = indexedLocation(index, consumerLoc)!;
 
-  // Extract consumed field name from the statement.
-  const fieldMatch = /reads `([^`]+)`/.exec(hyp.statement);
-  const consumedField = fieldMatch?.[1]?.split('.').pop() ?? '';
+  // The key the consumer asks for but the route does not send. Both the
+  // top-level and the nested wording are accepted.
+  const missingKey = hyp.supporting
+    .map((e) => /has no `([^`]+)`/.exec(e.description ?? '')
+      ?? /never sends `([^`]+)`/.exec(e.description ?? '')
+      ?? /reads `([^`]+)`/.exec(e.description ?? ''))
+    .find(Boolean)?.[1]?.split('.').pop() ?? '';
+  if (!missingKey) return null;
 
-  // Extract produced field from "never sends `X`" in evidence.
+  // Extract produced field from "sends { … }" in evidence.
   const producedMatch = hyp.supporting
     .map((e) => /sends \{ ([^}]+) \}/.exec(e.description ?? '') ?? /sends `([^`]+)`/.exec(e.description ?? ''))
     .find(Boolean);
-  const producedKeys = producedMatch?.[1]?.split(',').map((s) => s.trim()) ?? [];
+  const producedKeys = producedMatch?.[1]?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
 
-  // Best guess at the right key.
-  const bestKey = producedKeys.find((k) => k !== consumedField) ?? producedKeys[0] ?? '';
-  if (!consumedField || !bestKey || consumedField === bestKey) return null;
+  // Only claim a rename when a produced key actually resembles the missing
+  // one. Otherwise the mismatch is an extra read, not a typo, and the fix is
+  // to stop reading the key the contract never carried.
+  let bestKey = '';
+  let bestScore = 0;
+  for (const candidate of producedKeys) {
+    if (candidate === missingKey) continue;
+    const { score } = nameSimilarity(missingKey, candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      bestKey = candidate;
+    }
+  }
 
-  const consumerFile = consumerLoc.location.file;
+  const consumerFile = consumerAt.file;
   const fileContent = index.files.get(consumerFile)?.source ?? '';
-  const snippet = consumerLoc.snippet ?? consumedField;
+  const snippet = consumerLoc.snippet ?? missingKey;
 
-  // Generate a diff that renames consumedField → bestKey in the consumer.
+  if (bestScore < 0.55) {
+    // No resembling key: the consumer reads a field the contract never carried.
+    const find = snippet.slice(0, 120);
+    if (!find.includes(missingKey)) return null;
+    const replace = find
+      .split(missingKey)
+      .join('undefined')
+      .trim();
+    return {
+      id: makeId('rem'),
+      hypothesisId: hyp.id,
+      title: `Stop reading the absent ${q(missingKey)} in the consumer`,
+      edits: [{
+        file: consumerFile,
+        find: missingKey,
+        replace: 'undefined',
+        occurrences: 1,
+        lineHint: consumerAt.line,
+        reason: `The producer never sends ${q(missingKey)}, so this read is always undefined. Remove it, or add the field to the producer's contract if the value is genuinely needed.`,
+      }],
+      risk: 'low',
+      verification: `The consumer no longer dereferences ${q(missingKey)}; the view renders from the fields the route actually sends.`,
+      diffPreview: `-${find}\n+${replace}`,
+      applied: false,
+    };
+  }
+
+  // Generate a diff that renames missingKey → bestKey in the consumer.
   const find = snippet.slice(0, 120);
-  const replace = find.replace(new RegExp(`\\b${consumedField}\\b`), bestKey);
+  const replace = find.replace(new RegExp(`\\b${missingKey}\\b`), bestKey);
   if (find === replace) return null;
 
   const diffPreview = `-${find}\n+${replace}`;
   return {
     id: makeId('rem'),
     hypothesisId: hyp.id,
-    title: `Rename ${q(consumedField)} to ${q(bestKey)} in the consumer`,
+    title: `Rename ${q(missingKey)} to ${q(bestKey)} in the consumer`,
     edits: [{
       file: consumerFile,
-      find: consumedField,
+      find: missingKey,
       replace: bestKey,
       occurrences: 1,
-      lineHint: consumerLoc.location.line,
-      reason: `The API sends ${q(bestKey)} but the consumer reads ${q(consumedField)}. Align the consumer to the producer.`,
+      lineHint: consumerAt.line,
+      reason: `The API sends ${q(bestKey)} but the consumer reads ${q(missingKey)}. Align the consumer to the producer.`,
     }],
     risk: 'low',
     verification: `After applying, the property access resolves correctly; the rendered component shows the expected value.`,
@@ -164,8 +207,9 @@ function buildEnvRemediation(
   expectations: EvidenceExpectation,
 ): Remediation | null {
   // Extract the undeclared name from evidence.
-  const undeclaredEv = hyp.supporting.find((e) => e.description?.includes('never declared'));
-  if (!undeclaredEv?.location?.file) return null;
+  const undeclaredEv = hyp.supporting.find((e) => e.description?.includes('never declared') && indexedLocation(index, e));
+  if (!undeclaredEv) return null;
+  const undeclaredAt = indexedLocation(index, undeclaredEv)!;
 
   const readMatch = /Reads `([^`]+)`/.exec(undeclaredEv.description ?? '');
   const readName = readMatch?.[1] ?? '';
@@ -175,7 +219,7 @@ function buildEnvRemediation(
   const correctName = declaredMatch?.[1] ?? '';
   if (!readName) return null;
 
-  const consumerFile = undeclaredEv.location.file;
+  const consumerFile = undeclaredAt.file;
 
   if (correctName && correctName !== readName) {
     const diffPreview = `-${readName}\n+${correctName}`;
@@ -188,7 +232,7 @@ function buildEnvRemediation(
         find: readName,
         replace: correctName,
         occurrences: 1,
-        lineHint: undeclaredEv.location.line,
+        lineHint: undeclaredAt.line,
         reason: `${q(correctName)} is declared in the env file; ${q(readName)} is not. The code should read the declared name.`,
       }],
       risk: 'low',
@@ -225,18 +269,33 @@ function buildDbRemediation(
 ): Remediation | null {
   // The subject is the wrong column name; find the nearest declared column.
   const schemaEv = hyp.supporting.find((e) => e.description?.includes('declares'));
-  const queryEv = hyp.supporting.find((e) => e.description?.includes('Query') || e.description?.includes('reads'));
+  const queryEv = hyp.supporting.find((e) => (e.description?.includes('Query') || e.description?.includes('reads')) && indexedLocation(index, e));
 
-  if (!queryEv?.location?.file) return null;
+  if (!queryEv) return null;
+  const queryAt = indexedLocation(index, queryEv)!;
 
   const wrongCol = hyp.subject.split('.').pop() ?? hyp.subject;
   const declaredMatch = /declares: ([^\n]+)/.exec(schemaEv?.description ?? '');
-  const declared = declaredMatch?.[1]?.split(',').map((s) => s.trim().split(' ')[0]) ?? [];
-  const rightCol = declared.find((c) => c !== wrongCol) ?? declared[0] ?? '';
+  const declared = declaredMatch?.[1]?.split(',').map((s) => s.trim().split(' ')[0]).filter(Boolean) ?? [];
+
+  // Pick the declared column that most resembles the wrong one. Taking the
+  // first declared column instead would confidently "fix" `customer_name`
+  // into `id`, which is a different, wrong repair.
+  let rightCol = '';
+  let bestScore = 0;
+  for (const candidate of declared) {
+    if (candidate === wrongCol) continue;
+    const { score } = nameSimilarity(wrongCol, candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      rightCol = candidate;
+    }
+  }
 
   if (!rightCol || rightCol === wrongCol) return null;
+  if (bestScore < 0.3) return null; // nothing resembles it — do not guess a repair
 
-  const queryFile = queryEv.location.file;
+  const queryFile = queryAt.file;
   const diffPreview = `-${wrongCol}\n+${rightCol}`;
 
   return {
@@ -248,7 +307,7 @@ function buildDbRemediation(
       find: wrongCol,
       replace: rightCol,
       occurrences: 1,
-      lineHint: queryEv.location.line,
+      lineHint: queryAt.line,
       reason: `The schema declares ${q(rightCol)}; the query uses ${q(wrongCol)}, which does not exist.`,
     }],
     risk: 'medium',
@@ -258,24 +317,41 @@ function buildDbRemediation(
   };
 }
 
+/**
+ * Resolve the indexed file an evidence item points at, or null when it does
+ * not point at a real source file. Stack frames from a browser carry a URL
+ * (`http://localhost:5173/app.js`) rather than a repository path, and writing
+ * a "fix" to that string would produce a patch against nothing.
+ */
+function indexedLocation(
+  index: CodeIndex,
+  ev: Evidence,
+): { file: string; line: number } | null {
+  const loc = ev.location;
+  if (!loc?.file || !index.files.has(loc.file)) return null;
+  return { file: loc.file, line: loc.line ?? 0 };
+}
+
 function buildNullAccessRemediation(
   hyp: RootCause['hypotheses'][0],
   index: CodeIndex,
   expectations: EvidenceExpectation,
 ): Remediation | null {
-  const loc = hyp.supporting.find((e) => e.location?.file);
-  if (!loc?.location?.file) return null;
+  const loc = hyp.supporting.find((e) => indexedLocation(index, e));
+  if (!loc) return null;
+  const at = indexedLocation(index, loc)!;
+  const file = at.file;
 
   return {
     id: makeId('rem'),
     hypothesisId: hyp.id,
     title: `Guard the access to ${q(hyp.subject)}`,
     edits: [{
-      file: loc.location.file,
+      file,
       find: hyp.subject,
       replace: hyp.subject,
       occurrences: 1,
-      lineHint: loc.location.line,
+      lineHint: at.line,
       reason: `The runtime confirmed this value can be undefined. A guard (optional chaining or explicit check) prevents the TypeError.`,
     }],
     risk: 'low',

@@ -6,6 +6,7 @@ import type {
 import { id as makeId } from '../../utils/id.js';
 import { q } from '../../utils/format.js';
 import { nowIso } from '../../utils/time.js';
+import type { EvidenceExpectation } from '../../analysis/expectations.js';
 
 /**
  * Root Cause Engine
@@ -56,6 +57,37 @@ const KIND_WEIGHT: Partial<Record<SignalKind, number>> = {
   'symbol-located': 0.2,
 };
 
+/**
+ * Kinds that explain *why* the system broke, as opposed to kinds that only
+ * record *where* it broke. A stack trace saying `label` was undefined is a
+ * restatement of the bug report — it cannot be the root cause, because the
+ * report already said that. The cause is the broken contract underneath it.
+ */
+const CAUSAL_KINDS = new Set<SignalKind>([
+  'api-field-missing',
+  'api-field-rename-suspect',
+  'db-column-missing',
+  'db-column-unused',
+  'env-undeclared',
+  'service-mismatch',
+  'config-mismatch',
+  'test-failing',
+]);
+
+/** Subjects that are parsing artefacts rather than a real thing in the code. */
+const NOT_A_SUBJECT = new Set([
+  'unknown', 'undefined', 'null', 'nan', 'response', 'payload', 'data',
+  'result', 'res', 'body', 'json', 'error', 'value', 'obj', 'tmp',
+]);
+
+function isPlausibleSubject(subject: string): boolean {
+  const s = subject.trim();
+  if (!s || s.length > 120) return false;
+  if (NOT_A_SUBJECT.has(s.toLowerCase())) return false;
+  // A subject should look like an identifier, a path, or a qualified name.
+  return /^[A-Za-z_$][\w$]*(?:[.:/[\]"' ]+[A-Za-z0-9_$][\w$]*)*$/.test(s);
+}
+
 interface HypothesisCandidate {
   kind: SignalKind;
   subject: string;
@@ -65,6 +97,10 @@ interface HypothesisCandidate {
   contradictingEvidence: Evidence[];
   corroboratedBy: Set<string>; // agent ids
   totalWeight: number;
+  /** 0..1 — how well this candidate explains the reported failure. */
+  agreement: number;
+  /** Human-readable reasons the candidate does or does not fit the report. */
+  agreementHits: string[];
 }
 
 export async function runRootCauseEngine(
@@ -73,7 +109,7 @@ export async function runRootCauseEngine(
   allFindings: Finding[],
 ): Promise<RootCauseResult> {
   const candidates = buildCandidates(allSignals);
-  const hypotheses = rankAndFilter(candidates, allSignals);
+  const hypotheses = rankAndFilter(candidates, allSignals, ctx.expectations);
   const best = hypotheses[0] ?? null;
   const rootCause = materializeRootCause(best, hypotheses, ctx, allFindings);
   const f = finding({
@@ -98,6 +134,7 @@ function buildCandidates(signals: Signal[]): Map<string, HypothesisCandidate> {
 
   for (const sig of signals) {
     if (sig.kind === 'exculpatory') continue; // handled separately
+    if (!isPlausibleSubject(sig.subject)) continue; // parsing artefact
     const key = `${sig.kind}|${sig.subject}`;
     let cand = map.get(key);
     if (!cand) {
@@ -110,6 +147,8 @@ function buildCandidates(signals: Signal[]): Map<string, HypothesisCandidate> {
         contradictingEvidence: [],
         corroboratedBy: new Set(),
         totalWeight: 0,
+        agreement: 0,
+        agreementHits: [],
       };
       map.set(key, cand);
     }
@@ -134,7 +173,100 @@ function buildCandidates(signals: Signal[]): Map<string, HypothesisCandidate> {
   return map;
 }
 
-function rankAndFilter(candidates: Map<string, HypothesisCandidate>, allSignals: Signal[]): HypothesisCandidate[] {
+/**
+ * How well a candidate explains the failure that was actually reported.
+ *
+ * Weight alone is not enough to rank hypotheses. A real bug elsewhere in the
+ * repository can carry a large summed weight — the undeclared `VITE_API_BASE`
+ * in the demo project is a genuine defect, but it is a *different* defect from
+ * the one whose stack trace is in front of us. A candidate that names the
+ * file, line, symbol, or property the runtime actually complained about
+ * explains the report; one that matches none of them does not, no matter how
+ * many times it was observed.
+ */
+function agreementWithReport(
+  cand: HypothesisCandidate,
+  expectations: EvidenceExpectation,
+): { score: number; hits: string[] } {
+  const hits: string[] = [];
+  const frameFiles = new Set(expectations.frames.map((f) => f.file));
+  const frameSymbols = new Set(expectations.frames.map((f) => f.symbol));
+  const missingProps = new Set(expectations.missingProperties.map((p) => p.name));
+  const errorColumns = new Set(
+    expectations.databaseErrors.map((d) => d.column).filter((c): c is string => !!c),
+  );
+  const haystack = [
+    cand.subject,
+    ...cand.signals.map((s) => s.statement),
+    ...cand.supportingEvidence.map((e) => `${e.description ?? ''} ${e.snippet ?? ''}`),
+  ].join('\n');
+
+  for (const ev of cand.supportingEvidence) {
+    const loc = ev.location;
+    if (!loc?.file) continue;
+    if (frameFiles.has(loc.file)) {
+      hits.push(`same file as the reported failure (${loc.file})`);
+      // A frame names a line; evidence within a few lines of it is the spot.
+      const near = expectations.frames.some(
+        (f) => f.file === loc.file && Math.abs(f.line - (loc.line ?? 0)) <= 5,
+      );
+      if (near) hits.push(`at the reported line (${loc.file}:${loc.line})`);
+    }
+    if (cand.signals.some((s) => frameSymbols.has(s.subject))) {
+      hits.push(`names the failing symbol ${q(cand.subject)}`);
+    }
+  }
+
+  for (const prop of missingProps) {
+    if (haystack.includes(prop)) hits.push(`matches the property the runtime could not read (${q(prop)})`);
+  }
+  for (const col of errorColumns) {
+    if (haystack.includes(col)) hits.push(`matches the column the database rejected (${q(col)})`);
+  }
+  if (expectations.malformedPaths.length > 0) {
+    const seg = expectations.malformedPaths.map((m) => m.path.split('/').pop() ?? '').join(' ');
+    if (seg.includes('undefined') && /undefined|null/i.test(haystack)) {
+      hits.push('consistent with the literal `undefined` seen in the request log');
+    }
+  }
+  for (const p of expectations.requestPaths) {
+    if (p.status && p.status >= 500 && /api-field-missing|service-mismatch|db-/.test(cand.kind)) {
+      hits.push('a contract mismatch is consistent with the failing request');
+    }
+  }
+
+  // Cap the count so a candidate cannot win purely by mentioning many things.
+  const unique = [...new Set(hits)];
+  return { score: Math.min(1, unique.length / 2), hits: unique.slice(0, 4) };
+}
+
+function rankAndFilter(
+  candidates: Map<string, HypothesisCandidate>,
+  allSignals: Signal[],
+  expectations: EvidenceExpectation,
+): HypothesisCandidate[] {
+  // When the report names where it failed, a candidate that explains none of
+  // it is demoted rather than merely out-scored, so a louder unrelated defect
+  // cannot take the top slot.
+  const reportIsLocated = expectations.frames.length > 0
+    || expectations.missingProperties.length > 0
+    || expectations.databaseErrors.length > 0
+    || expectations.malformedPaths.length > 0;
+
+  for (const cand of candidates.values()) {
+    const { score, hits } = agreementWithReport(cand, expectations);
+    cand.agreement = score;
+    cand.agreementHits = hits;
+    if (reportIsLocated) {
+      if (score > 0) cand.totalWeight *= 0.5 + 1.5 * score;
+      else cand.totalWeight *= 0.2;
+    }
+    // A causal explanation anchored to the failure site is the answer we want.
+    // A descriptive signal there is only a pointer to the answer.
+    if (CAUSAL_KINDS.has(cand.kind) && score > 0) cand.totalWeight *= 1.5;
+    else if (!CAUSAL_KINDS.has(cand.kind)) cand.totalWeight *= 0.5;
+  }
+
   const list = [...candidates.values()].sort((a, b) => b.totalWeight - a.totalWeight);
 
   // Prune candidates with no real evidence.
@@ -236,18 +368,25 @@ function narrativeFor(c: HypothesisCandidate): string {
 
 function detailFor(c: HypothesisCandidate, ctx: AgentContext): string {
   const symptom = ctx.bug.actualBehavior.slice(0, 180);
-  switch (c.kind) {
-    case 'api-field-missing':
-      return `The consumer expects ${q(c.subject)} in the JSON response but the server never sets that key. The symptom "${symptom}" is caused by the undefined value propagating into the render path.`;
-    case 'env-undeclared':
-      return `The build or runtime environment does not define ${q(c.subject)}. When code reads an undefined env variable, any string interpolation produces the literal text "undefined", which is what appears in ${symptom}.`;
-    case 'db-column-missing':
-      return `The query attempts to project ${q(c.subject)} but the table schema does not include that column. The database engine rejects the statement, causing the endpoint to return HTTP 500.`;
-    case 'runtime-null-access':
-      return `JavaScript throws a TypeError when code tries to read a property of undefined. The stack trace identified ${q(c.subject)} as the absent value. The symptom "${symptom}" follows from that failure.`;
-    default:
-      return `The highest-weighted signal cluster points at ${q(c.subject)}. Corroborated by ${[...c.corroboratedBy].join(', ')}.`;
+  const body = ((): string => {
+    switch (c.kind) {
+      case 'api-field-missing':
+        return `The consumer reads a property one level deeper than the value the route actually sends. The undefined value propagates into the render path, which is the reported symptom "${symptom}".`;
+      case 'env-undeclared':
+        return `The build or runtime environment does not define ${q(c.subject)}. When code reads an undefined env variable, any string interpolation produces the literal text "undefined".`;
+      case 'db-column-missing':
+        return `The query attempts to project ${q(c.subject)} but the table schema does not include that column. The database engine rejects the statement, causing the endpoint to return HTTP 500.`;
+      case 'runtime-null-access':
+        return `JavaScript throws a TypeError when code tries to read a property of undefined. The stack trace identified ${q(c.subject)} as the absent value. The symptom "${symptom}" follows from that failure.`;
+      default:
+        return `The highest-weighted signal cluster points at ${q(c.subject)}. Corroborated by ${[...c.corroboratedBy].join(', ')}.`;
+    }
+  })();
+
+  if (c.agreementHits.length === 0) {
+    return `${body} Note: nothing in this hypothesis lines up with the failure reported in the evidence bundle, so it is a real defect but not the one under investigation.`;
   }
+  return `${body} It matches the report: ${c.agreementHits.join('; ')}.`;
 }
 
 function buildFailurePath(

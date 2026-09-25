@@ -10,6 +10,8 @@ import fs from 'node:fs/promises';
 import { buildCodeIndex, buildProjectMap } from '../src/analysis/codeIndex.js';
 import { deriveExpectations } from '../src/analysis/expectations.js';
 import { managerAgent } from '../src/agents/manager/managerAgent.js';
+import { runRootCauseEngine } from '../src/agents/rootCause/rootCauseAgent.js';
+import { generateChangePlan } from '../src/agents/rootCause/changePlan.js';
 import { loadDemoBug } from '../src/repositories/demoCatalog.js';
 import { config } from '../src/config.js';
 import { clearReadCache } from '../src/utils/fsSafe.js';
@@ -89,6 +91,47 @@ async function main() {
   for (const s of [...signals].sort((a, b) => b.weight - a.weight)) {
     console.log(`  [${s.weight.toFixed(2)}] (${s.source}/${s.kind}) ${s.subject}\n      ${s.statement}`);
   }
+
+  const agentCtx = {
+    investigationId: 'probe',
+    workspacePath: root,
+    index,
+    expectations,
+    bug: bug.report,
+    evidence,
+    note: (m: string) => notes.push(m),
+  };
+
+  const { rootCause } = await runRootCauseEngine(agentCtx, signals, findings);
+  console.log(`\n=== ROOT CAUSE (confidence ${rootCause.confidence.toFixed(2)}, margin ${rootCause.margin.toFixed(2)}) ===`);
+  console.log(`  ${rootCause.statement}`);
+  console.log(`  ${rootCause.detail}`);
+  console.log('  hypotheses:');
+  for (const h of rootCause.hypotheses) {
+    console.log(`    [${h.status}] score=${h.score.toFixed(2)} ${h.category} — ${h.statement}`);
+  }
+
+  const plan = generateChangePlan({
+    investigationId: 'probe',
+    rootCause,
+    index,
+    expectations,
+  });
+  console.log(`\n=== CHANGE PLAN (hash ${plan.planHash.slice(0, 12)}…) ===`);
+  console.log(`  ${plan.summary}`);
+  for (const change of plan.changes) {
+    console.log(`  - ${change.file}  ${change.currentBehavior} → ${change.requiredChange}`);
+    console.log(`      ${change.reason}`);
+  }
+  if (plan.remediations.length > 0) {
+    console.log('  remediations:');
+    for (const r of plan.remediations) console.log(`    - [${r.risk}] ${r.title}`);
+  }
+  if (plan.consideredAndRejected.length > 0) {
+    console.log('  considered and rejected:');
+    for (const c of plan.consideredAndRejected) console.log(`    - ${c.statement}: ${c.why}`);
+  }
+
   console.log(`\ncomponents: ${map.components.map((c) => `${c.layer}:${c.files.length}`).join(', ')}`);
   console.log(`path edges: ${map.path.length}`);
 }

@@ -1,5 +1,5 @@
 ﻿import type { AgentContext, AgentDefinition, AgentResult } from '../types.js';
-import type { ClientCall, CodeIndex, RouteDef } from '../../analysis/codeIndex.js';
+import type { ClientCall, CodeIndex, ContractCheck, RouteDef } from '../../analysis/codeIndex.js';
 import { matchRoute, nameSimilarity } from '../../analysis/codeIndex.js';
 import { codeEvidence } from '../../analysis/evidenceParse.js';
 import { evidence, finding, signal } from '../types.js';
@@ -132,124 +132,106 @@ function describeRoutes(ctx: AgentContext, index: CodeIndex) {
 interface FieldMismatch {
   call: ClientCall;
   route: RouteDef;
-  missing: { key: string; chain: string[]; line: number; file: string; snippet: string; depth: number; via: string | null }[];
+  missing: { key: string; chain: string[]; line: number; file: string; snippet: string; depth: number; via: string | null; readIn: string | null }[];
   renameSuspects: { consumed: string; produced: string; score: number; chain: string[]; line: number; file: string; snippet: string }[];
   unusedProduced: string[];
 }
 
 /**
- * Walks a consumer chain (`payload.prediction.prediction.label`) against what the
- * producer actually sends, one hop at a time.
+ * Walks a consumer chain against the shapes the indexer resolved for it, one
+ * hop at a time, and reports the first hop that cannot be satisfied.
  *
- * The first hop is checked against the response payload's own keys. Deeper hops
- * are checked against the known shape of the value behind that key, which comes
- * from the query that produced it. A hop we know nothing about stops the walk
- * rather than inventing a mismatch.
+ * The indexer has already followed the payload through any local function it
+ * was handed to, so a read inside a render helper is judged against the value
+ * that helper actually receives. A hop whose shape is unknown ends the walk
+ * without a verdict rather than inventing a mismatch.
  */
-function checkChain(
-  chain: string[],
-  produced: Set<string>,
-  shapes: Record<string, { keys: string[]; via: string; table: string | null }>,
-): { missingHop: string | null; depth: number; via: string | null; keysAtHop: string[] | null } {
-  const hops = chain.slice(1);
-  if (hops.length === 0) return { missingHop: null, depth: 0, via: null, keysAtHop: null };
-
-  const first = hops[0];
-  if (!produced.has(first)) return { missingHop: first, depth: 1, via: null, keysAtHop: null };
-
-  let current = first;
-  for (let i = 1; i < hops.length; i += 1) {
-    const shape = shapes[current];
-    if (!shape) return { missingHop: null, depth: 0, via: null, keysAtHop: null }; // unknown, stay silent
-    const next = hops[i];
-    if (!shape.keys.includes(next)) {
-      return { missingHop: next, depth: i + 1, via: shape.via, keysAtHop: shape.keys };
+function firstBrokenHop(check: ContractCheck): { key: string; depth: number; available: string[] } | null {
+  for (let i = 0; i < check.chain.length; i += 1) {
+    const hop = check.hops[i];
+    if (!hop?.keys) return null; // shape unknown past this point
+    if (!hop.keys.includes(check.chain[i])) {
+      return { key: check.chain[i], depth: i + 1, available: hop.keys };
     }
-    current = next;
   }
-  return { missingHop: null, depth: 0, via: null, keysAtHop: null };
+  return null;
 }
 
 function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: Finding[]; signals: Signal[] } {
   const findings: Finding[] = [];
   const signals: Signal[] = [];
-  const mismatches: FieldMismatch[] = [];
 
-  for (const call of index.clientCalls) {
-    const route = matchRoute(index.routes, call.url ?? call.urlExpression);
-    if (!route) continue;
+  // Group the checks by the request they belong to, so one request produces one
+  // finding rather than one per read site.
+  const groups = new Map<string, { check: ContractCheck; broken: { key: string; depth: number; available: string[] } }[]>();
+  for (const check of index.contractChecks) {
+    const broken = firstBrokenHop(check);
+    if (!broken) continue;
+    const key = `${check.call.id}|${check.route.id}`;
+    const bucket = groups.get(key) ?? [];
+    bucket.push({ check, broken });
+    groups.set(key, bucket);
+  }
+
+  for (const bucket of groups.values()) {
+    const { call, route } = bucket[0].check;
     const produced = new Set(route.responseKeys.map((k) => k.name));
-    // Spread payload (`{ ...row }`) means the shape is dynamic — do not guess.
-    if ([...produced].some((k) => k.startsWith('...'))) continue;
-    if (produced.size === 0) continue;
-
     const missing: FieldMismatch['missing'] = [];
     const renameSuspects: FieldMismatch['renameSuspects'] = [];
     const consumedNames = new Set<string>();
     const reported = new Set<string>();
 
-    for (const access of call.accesses) {
-      if (access.chain.length < 2) continue;
-      const pathFromRoot = access.chain.slice(1);
-      if (pathFromRoot.length === 0) continue;
-      consumedNames.add(pathFromRoot[0]);
+    for (const { check, broken } of bucket) {
+      const key = broken.key;
+      const pathSoFar = check.chain.slice(0, broken.depth);
+      const dedupe = `${key}|${pathSoFar.join('.')}|${check.file}:${check.line}`;
+      if (reported.has(dedupe)) continue;
+      reported.add(dedupe);
 
-      const verdict = checkChain(access.chain, produced, route.responseShapes ?? {});
-      if (!verdict.missingHop) continue;
-
-      const key = verdict.missingHop;
-      const dedupeKey = `${key}|${pathFromRoot.slice(0, verdict.depth).join('.')}`;
-      if (reported.has(dedupeKey)) continue;
-      reported.add(dedupeKey);
-
+      consumedNames.add(pathSoFar[0]);
       missing.push({
         key,
-        chain: access.chain,
-        line: access.line,
-        file: access.file,
-        snippet: access.snippet,
-        depth: verdict.depth,
-        via: verdict.via,
+        chain: [check.root, ...check.chain],
+        line: check.line,
+        file: check.file,
+        snippet: check.snippet,
+        depth: broken.depth,
+        via: check.hops[broken.depth - 1]?.via ?? null,
+        readIn: check.readIn,
       });
 
-      // Only a top-level miss can be a rename of a produced field.
-      if (verdict.depth === 1) {
+      // Only a miss on the response's own keys can be a rename of one of them.
+      if (broken.depth === 1) {
         let best: { name: string; score: number } | null = null;
         for (const name of produced) {
           const sim = nameSimilarity(key, name);
           if (!best || sim.score > best.score) best = { name, score: sim.score };
         }
-        if (best && best.score >= 0.4) {
+        if (best && best.score >= 0.55 && best.score < 0.97) {
           renameSuspects.push({
             consumed: key,
             produced: best.name,
             score: best.score,
-            chain: access.chain,
-            line: access.line,
-            file: access.file,
-            snippet: access.snippet,
+            chain: [check.root, ...check.chain],
+            line: check.line,
+            file: check.file,
+            snippet: check.snippet,
           });
         }
       }
     }
 
-    if (missing.length === 0 && renameSuspects.length === 0) continue;
-
+    if (missing.length === 0) continue;
     const unusedProduced = [...produced].filter((k) => !consumedNames.has(k) && !k.startsWith('...'));
-    mismatches.push({ call, route, missing, renameSuspects, unusedProduced });
-  }
 
-  for (const mismatch of mismatches) {
-    const { call, route, missing, renameSuspects, unusedProduced } = mismatch;
     const ev: Evidence[] = [];
-    const contractStatement = `${route.method} ${route.path} sends { ${[...new Set(route.responseKeys.map((k) => k.name))].join(', ')} }`;
-
+    const producedList = [...new Set(route.responseKeys.map((k) => k.name))];
     ev.push(codeEvidence(
       'api',
       route.file,
       route.responseLiteralLine ?? route.line,
-      `Producer: ${contractStatement}`,
-      `{ ${[...new Set(route.responseKeys.map((k) => k.name))].join(', ')} }`,
+      `Producer: ${route.method} ${route.path} sends { ${producedList.join(', ')} }`,
+      `{ ${producedList.join(', ')} }`,
       route.handler ?? undefined,
     ));
     for (const m of missing.slice(0, 6)) {
@@ -257,8 +239,8 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
         'api',
         m.file,
         m.line,
-        m.depth > 1
-          ? `Consumer reads ${q(m.chain.join('.'))}, one level deeper than ${m.via ?? 'the producer'} can supply`
+        m.via
+          ? `Consumer reads ${q(m.chain.join('.'))} inside ${m.readIn ?? 'a helper'}; the value it receives has no ${q(m.key)} (${m.via})`
           : `Consumer reads ${q(m.chain.join('.'))} but ${route.method} ${route.path} never sends ${q(m.key)}`,
         m.snippet,
       ));
@@ -278,12 +260,18 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
       if (runtimeHit) weight += 0.25;
       // Same function the stack frame points at is the strongest possible link.
       if (stackHit && m.line >= (stackHit.line - 20) && m.line <= (stackHit.line + 20)) weight += 0.1;
-      // A statically proven shape mismatch does not need runtime help.
-      if (m.depth > 1) weight = Math.max(weight, 0.7);
+      // When the shape of the value at the failing hop is known, this is a proof
+      // rather than a guess, so it does not need runtime corroboration.
+      if (m.via) weight = Math.max(weight, 0.7);
 
-      const statement = m.depth > 1
-        ? `Consumer reads ${q(m.chain.join('.'))}, but ${m.via ?? 'the producer'} returns { ${route.responseShapes[Object.keys(route.responseShapes)[0]]?.keys.join(', ') ?? ''} } — there is no ${q(m.key)} at that depth.`
-        : `Consumer ${q(m.chain.join('.'))} reads ${q(m.key)}, which ${route.method} ${route.path} never sends.`;
+      // A miss on the response's own keys blames the route. A miss one level in
+      // blames the value behind a key, which is a different bug in a different
+      // place, and saying otherwise would send a fixer to the wrong file.
+      const statement = m.via && m.depth > 1
+        ? `Consumer reads ${q(m.chain.join('.'))} inside ${m.readIn ?? 'a helper'}, but the value it is given has no ${q(m.key)}: ${m.via}.`
+        : m.via
+          ? `Consumer reads ${q(m.chain.join('.'))}, but the value behind ${q(m.chain[m.depth - 1])} has no ${q(m.key)}: ${m.via}.`
+          : `Consumer ${q(m.chain.join('.'))} reads ${q(m.key)}, which ${route.method} ${route.path} never sends.`;
 
       mSignals.push(signal({
         kind: 'api-field-missing',
@@ -297,6 +285,7 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
           chain: m.chain,
           depth: m.depth,
           shapeSource: m.via,
+          readIn: m.readIn,
           consumerFile: m.file,
           consumerLine: m.line,
           consumerSnippet: m.snippet,
@@ -304,7 +293,7 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
           routePath: route.path,
           routeFile: route.file,
           routeHandler: route.handler,
-          producedKeys: [...new Set(route.responseKeys.map((k) => k.name))],
+          producedKeys: producedList,
           runtimeCorroborated: Boolean(runtimeHit),
           stackCorroborated: Boolean(stackHit),
         },
@@ -335,20 +324,19 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
 
     const severity = mSignals.some((s) => s.weight >= 0.7) ? 'high' : 'medium';
     const consumedList = missing.map((x) => q(x.chain.join('.'))).join(', ') || 'no matching field';
-    const producedList = [...new Set(route.responseKeys.map((k) => k.name))].join(', ');
     findings.push(finding({
       agent: 'api',
       title: `Contract mismatch: ${route.method} ${route.path}`,
       summary: [
         `Consumer ${call.file}:${call.line} (${call.functionName ?? 'module scope'}) reads ${consumedList}.`,
-        `Producer sends { ${producedList} }.`,
+        `Producer sends { ${producedList.join(', ')} }.`,
         unusedProduced.length > 0 ? `Fields sent but never read: ${unusedProduced.join(', ')}.` : '',
       ].filter(Boolean).join(' '),
       severity,
       confidence: Math.max(...mSignals.map((s) => s.weight), 0.3),
       impact: `Any request to ${route.method} ${route.path} produces undefined values in the consumer.`,
       files: [call.file, route.file],
-      functions: [call.functionName, route.handler].filter(Boolean) as string[],
+      functions: [call.functionName, route.handler, ...missing.map((m) => m.readIn)].filter(Boolean) as string[],
       evidence: ev,
       signals: mSignals,
     }));

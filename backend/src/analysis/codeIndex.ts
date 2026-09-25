@@ -1671,6 +1671,8 @@ interface KnownValue {
 export interface ContractCheck {
   call: ClientCall;
   route: RouteDef;
+  /** The local the read starts from, e.g. `payload` or a callee parameter. */
+  root: string;
   /** Property chain with the bound local stripped, e.g. `['prediction','label']`. */
   chain: string[];
   file: string;
@@ -1833,6 +1835,7 @@ export function buildContractChecks(index: CodeIndex): ContractCheck[] {
       out.push({
         call,
         route,
+        root: head,
         chain: rest,
         file: access.file,
         line: access.line,

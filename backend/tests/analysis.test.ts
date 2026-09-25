@@ -210,6 +210,39 @@ test('response shapes resolve the nested value behind a response key', async () 
   assert.ok(orders?.responseShapes.order, `no shape resolved: ${JSON.stringify(orders?.responseShapes)}`);
 });
 
+test('a view mapper defines the shape, not the query behind it', async () => {
+  const index = await buildCodeIndex(DEMO_ROOT);
+  const detail = index.routes.find((r) => r.path === '/api/predictions/:id');
+  // `getPrediction` runs a JOIN, but returns `toPredictionView(row)`, so the
+  // view's keys are what a caller actually receives.
+  assert.deepEqual(detail?.responseShapes.prediction?.keys.sort(), [
+    'confidence', 'createdAt', 'feedbackId', 'id', 'label', 'tone',
+  ]);
+});
+
+test('a read one function below the fetch is checked against the route shape', async () => {
+  const index = await buildCodeIndex(DEMO_ROOT);
+  // `renderDetail` receives `payload.prediction`; it must not read one level
+  // deeper than the view mapper produces.
+  const deep = index.contractChecks.find(
+    (c) => c.file === 'web/app.js' && c.line === 35 && c.readIn === 'renderDetail',
+  );
+  assert.ok(deep, 'the renderDetail read was not traced back to the route');
+  assert.deepEqual(deep.chain, ['prediction', 'label']);
+  assert.ok(!deep.hops[0].keys?.includes('prediction'), 'view shape should not contain `prediction`');
+});
+
+test('contract checks do not leak between sibling functions', async () => {
+  const index = await buildCodeIndex(DEMO_ROOT);
+  // `payload.prediction` in loadPredictionDetail must be judged against
+  // /api/predictions/:id, never against the collection route.
+  const crossed = index.contractChecks.filter(
+    (c) => c.file === 'web/app.js' && c.chain[0] === 'prediction'
+      && c.route.path === '/api/predictions',
+  );
+  assert.deepEqual(crossed, []);
+});
+
 void pathToFileURL;
 void TEMPLATE_URL;
 void TEMPLATE_BASE;
