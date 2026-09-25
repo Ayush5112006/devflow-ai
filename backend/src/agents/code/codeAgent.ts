@@ -1,10 +1,11 @@
-import type { AgentContext, AgentDefinition, AgentResult } from '../types.js';
+﻿import type { AgentContext, AgentDefinition, AgentResult } from '../types.js';
 import type { CodeIndex, IndexedFile } from '../../analysis/codeIndex.js';
 import { codeEvidence, parseRuntimeErrors, parseStackFrames } from '../../analysis/evidenceParse.js';
 import { evidence, finding, signal } from '../types.js';
 import type { Evidence, Finding, Signal } from '../../types/index.js';
 import { readTextFile } from '../../utils/fsSafe.js';
 import path from 'node:path';
+import { q } from '../../utils/format.js';
 
 /**
  * Code Investigation Agent
@@ -45,7 +46,7 @@ export const codeAgent: AgentDefinition = {
             'code',
             def.file,
             def.line,
-            `Symbol \`${def.name}\` found in ${def.file}:${def.line}`,
+            `Symbol ${q(def.name)} found in ${def.file}:${def.line}`,
             snippet,
             def.name,
           ));
@@ -54,7 +55,7 @@ export const codeAgent: AgentDefinition = {
         }
         signals.push(signal({
           kind: 'symbol-located',
-          statement: `\`${target.name}\` is defined in ${located.length} place(s), first at ${located[0].file}:${located[0].line}.`,
+          statement: `${q(target.name)} is defined in ${located.length} place(s), first at ${located[0].file}:${located[0].line}.`,
           subject: target.name,
           source: 'code',
           weight: 0.55 * target.weight,
@@ -350,7 +351,7 @@ async function analysePropertyChains(
         const isFailurePath = missing.some((mm) => chain.includes(mm.name) || chain[chain.length - 1] === mm.name);
         if (!isFailurePath) continue;
 
-        ev.push(codeEvidence('code', rel, i + 1, `Reads \`${chain.join('.')}\` in the failing path`, text.trim().slice(0, 200)));
+        ev.push(codeEvidence('code', rel, i + 1, `Reads ${q(chain.join('.'))} in the failing path`, text.trim().slice(0, 200)));
       }
     }
     if (ev.length > 60) break;
@@ -361,7 +362,7 @@ async function analysePropertyChains(
     ctx.note(`found ${ev.length} property read(s) on the failing path`);
     signals.push(signal({
       kind: 'api-field-missing',
-      statement: `Failing path reads ${chains.slice(0, 4).map((c) => `\`${c}\``).join(', ')} — these are the fields the runtime proved absent.`,
+      statement: `Failing path reads ${chains.slice(0, 4).map((c) => `${q(c)}`).join(', ')} — these are the fields the runtime proved absent.`,
       subject: chains[0] ?? 'unknown',
       source: 'code',
       weight: 0.8,
@@ -388,3 +389,4 @@ async function analysePropertyChains(
 /** Exposed for the change-plan generator, which reuses the caller search. */
 export { findCallers, locateInIndex, collectTargets };
 export type { Target, IndexedFile };
+

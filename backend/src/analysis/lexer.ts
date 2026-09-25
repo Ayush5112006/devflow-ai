@@ -110,6 +110,19 @@ export function lineAt(source: string, offset: number): number {
   return line;
 }
 
+/** Character offset at which the given 1-based line starts. */
+export function offsetAt(source: string, line: number): number {
+  if (line <= 1) return 0;
+  let current = 1;
+  for (let i = 0; i < source.length; i += 1) {
+    if (source[i] === '\n') {
+      current += 1;
+      if (current === line) return i + 1;
+    }
+  }
+  return source.length;
+}
+
 /** Finds the index just past the `}` that closes the `{` at `openIndex`. */
 export function matchBrace(blanked: string, openIndex: number): number {
   if (blanked[openIndex] !== '{') return -1;

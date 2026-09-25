@@ -3,11 +3,12 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+/** The FixFlow repository root (the directory holding the workspace package.json). */
 export const ROOT_DIR = path.resolve(here, '..', '..');
-export const REPO_ROOT = path.resolve(ROOT_DIR, '..');
-export const DEMO_DIR = path.join(REPO_ROOT, 'demo');
-export const WORKSPACES_DIR = path.join(REPO_ROOT, 'workspaces');
-export const DATA_DIR = path.join(ROOT_DIR, 'data');
+export const BACKEND_DIR = path.resolve(here, '..');
+export const DEMO_DIR = path.join(ROOT_DIR, 'demo');
+export const WORKSPACES_DIR = path.join(ROOT_DIR, 'workspaces');
+export const DATA_DIR = path.join(BACKEND_DIR, 'data');
 
 function num(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -22,7 +23,7 @@ export const config = {
   dataDir: process.env.FIXFLOW_DATA_DIR ?? DATA_DIR,
   workspacesDir: process.env.FIXFLOW_WORKSPACES_DIR ?? WORKSPACES_DIR,
   demoDir: DEMO_DIR,
-  repoRoot: REPO_ROOT,
+  repoRoot: ROOT_DIR,
   /** Hard ceiling for a single allow-listed command. */
   commandTimeoutMs: num('FIXFLOW_COMMAND_TIMEOUT_MS', 120_000),
   /** Never walk or read more than this many files from a target project. */

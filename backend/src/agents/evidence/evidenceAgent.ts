@@ -1,10 +1,11 @@
-import type { AgentDefinition, AgentContext, AgentResult } from '../types.js';
+﻿import type { AgentDefinition, AgentContext, AgentResult } from '../types.js';
 import type { EvidenceAttachment } from '../../types/index.js';import {
   extractQuotedIdentifiers, findDatabaseErrors, findJsonParseErrors, findUndefinedInPaths,
   logEvidence, parseLogLines, parseRuntimeErrors, parseStackFrames,
 } from '../../analysis/evidenceParse.js';
 import { evidence, finding, signal } from '../types.js';
 import type { Evidence, Finding, Signal } from '../../types/index.js';
+import { q } from '../../utils/format.js';
 
 /**
  * Documentation / Evidence Agent
@@ -54,7 +55,7 @@ async function analyseReport(ctx: AgentContext) {
   for (const identifier of extractQuotedIdentifiers(text)) {
     evidenceList.push(evidence({
       kind: 'report',
-      description: `Bug report names the identifier \`${identifier}\``,
+      description: `Bug report names the identifier ${q(identifier)}`,
       snippet: identifier,
       source: 'evidence',
     }));
@@ -274,6 +275,9 @@ async function analyseAttachment(ctx: AgentContext, attachment: EvidenceAttachme
     const table = tableMatch?.[1] ?? (columnMatch ? qualifierOf(columnMatch[1]) : null);
 
     const ev: Evidence[] = [logEvidence('evidence', attachment.name, dbErr.line, `Database error: ${dbErr.message}`, dbErr.raw)];
+    let columnHint = 'The statement was rejected.';
+    if (column) columnHint = `Column ${q(column)}${table ? ` on table ${q(table)}` : ''} does not exist.`;
+    else if (table) columnHint = `Table ${q(table)} does not exist.`;
     for (const frame of frames) {
       if (!/\.[cm]?[jt]sx?$/.test(frame.file)) continue;
       ev.push(evidence({
@@ -285,7 +289,7 @@ async function analyseAttachment(ctx: AgentContext, attachment: EvidenceAttachme
       }));
     }
 
-    const dbSignals: Signal[] = [{
+    const dbSignals: Signal[] = [signal({
       kind: 'db-column-missing',
       statement: `Database rejected the query: ${dbErr.message}`,
       subject: column ?? subject,
@@ -298,12 +302,12 @@ async function analyseAttachment(ctx: AgentContext, attachment: EvidenceAttachme
         message: dbErr.message,
         frames: frames.filter((f) => /\.[cm]?[jt]sx?$/.test(f.file)).map((f) => ({ file: f.file, line: f.line, symbol: f.symbol })),
       },
-    }];
+    })];
 
     findings.push(finding({
       agent: 'evidence',
       title: `Database error: ${dbErr.message}`,
-      summary: `The database rejected a statement. ${column ? `Column \`${column}\`${table ? ` on table \`${table}\`` : ''} does not exist.`,
+      summary: `The database rejected a statement. ${columnHint}`,
       severity: 'high',
       confidence: 0.95,
       impact: 'The affected endpoint returns HTTP 500 for every request.',
@@ -370,3 +374,4 @@ function stripTableQualifier(name: string): string {
 function qualifierOf(name: string): string | null {
   return name.includes('.') ? (name.split('.')[0] as string) : null;
 }
+

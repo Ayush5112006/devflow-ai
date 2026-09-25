@@ -1,9 +1,10 @@
-import type { AgentContext, AgentDefinition, AgentResult } from '../types.js';
+﻿import type { AgentContext, AgentDefinition, AgentResult } from '../types.js';
 import type { ClientCall, CodeIndex, RouteDef } from '../../analysis/codeIndex.js';
 import { matchRoute, nameSimilarity } from '../../analysis/codeIndex.js';
 import { codeEvidence } from '../../analysis/evidenceParse.js';
 import { evidence, finding, signal } from '../types.js';
 import type { Evidence, Finding, Signal } from '../../types/index.js';
+import { q } from '../../utils/format.js';
 
 /**
  * API / Service Agent
@@ -217,7 +218,7 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
         'api',
         m.file,
         m.line,
-        `Consumer reads \`${m.chain.join('.')}\` but ${route.method} ${route.path} never sends \`${m.key}\``,
+        `Consumer reads ${q(m.chain.join('.'))} but ${route.method} ${route.path} never sends ${q(m.key)}`,
         m.snippet,
       ));
     }
@@ -239,7 +240,7 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
 
       mSignals.push(signal({
         kind: 'api-field-missing',
-        statement: `Consumer \`${m.chain.join('.')}\` reads \`${m.key}\`, which ${route.method} ${route.path} never sends.`,
+        statement: `Consumer ${q(m.chain.join('.'))} reads ${q(m.key)}, which ${route.method} ${route.path} never sends.`,
         subject: m.key,
         source: 'api',
         weight: Math.min(0.98, weight),
@@ -264,7 +265,7 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
     for (const r of renameSuspects) {
       mSignals.push(signal({
         kind: 'api-field-rename-suspect',
-        statement: `\`${r.consumed}\"` looks like a rename of the produced field \`${r.produced}\` (similarity ${r.score.toFixed(2)}).`,
+        statement: `"${r.consumed}" looks like a rename of the produced field ${q(r.produced)} (similarity ${r.score.toFixed(2)}).`,
         subject: r.consumed,
         source: 'api',
         weight: Math.min(0.9, 0.3 + r.score * 0.5),
@@ -284,19 +285,21 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
     }
 
     const severity = mSignals.some((s) => s.weight >= 0.7) ? 'high' : 'medium';
+    const consumedList = missing.map((x) => q(x.key)).join(', ') || 'no matching field';
+    const producedList = [...new Set(route.responseKeys.map((k) => k.name))].join(', ');
     findings.push(finding({
       agent: 'api',
       title: `Contract mismatch: ${route.method} ${route.path}`,
       summary: [
-        `Consumer ${m.call.file}:${m.call.line} (${m.call.functionName ?? 'module scope'}) reads ${missing.map((m) => `\`${m.key}\``).join(', ') || 'no matching field'}.`,
-        `Producer sends { ${[...new Set(route.responseKeys.map((k) => k.name))].join(', ')} }.`,
+        `Consumer ${call.file}:${call.line} (${call.functionName ?? 'module scope'}) reads ${consumedList}.`,
+        `Producer sends { ${producedList} }.`,
         unusedProduced.length > 0 ? `Fields sent but never read: ${unusedProduced.join(', ')}.` : '',
       ].filter(Boolean).join(' '),
       severity,
       confidence: Math.max(...mSignals.map((s) => s.weight), 0.3),
       impact: `Any request to ${route.method} ${route.path} produces undefined values in the consumer.`,
-      files: [m.call.file, route.file],
-      functions: [m.call.functionName, route.handler].filter(Boolean) as string[],
+      files: [call.file, route.file],
+      functions: [call.functionName, route.handler].filter(Boolean) as string[],
       evidence: ev,
       signals: mSignals,
     }));
@@ -344,7 +347,7 @@ function findEnvIssues(ctx: AgentContext, index: CodeIndex): { findings: Finding
       const d = declared.get(nearMatch.name) as (typeof declared extends Map<string, infer V> ? V : never);
       ev.push(evidence({
         kind: 'config',
-        description: `\`${nearMatch.name}\` IS declared in ${d.file}:${d.line} (value ${d.value})`,
+        description: `${q(nearMatch.name)} IS declared in ${d.file}:${d.line} (value ${d.value})`,
         snippet: `${nearMatch.name}=${d.value}`,
         location: { file: d.file, line: d.line },
         source: 'api',
@@ -360,8 +363,8 @@ function findEnvIssues(ctx: AgentContext, index: CodeIndex): { findings: Finding
     }
 
     const statement = nearMatch
-      ? `\`${ref.file}\` reads \`${ref.name}\` (never declared) while \`${nearMatch.name}\` is the declared variable.`
-      : `\`${ref.file}\` reads \`${ref.name}\`, which is not declared in any env file.`;
+      ? `${q(ref.file)} reads ${q(ref.name)} (never declared) while ${q(nearMatch.name)} is the declared variable.`
+      : `${q(ref.file)} reads ${q(ref.name)}, which is not declared in any env file.`;
 
     signals.push(signal({
       kind: 'env-undeclared',
@@ -407,7 +410,7 @@ function findEnvIssues(ctx: AgentContext, index: CodeIndex): { findings: Finding
       const d = declared.get(name) as { file: string; line: number; value: string };
       ev.push(evidence({
         kind: 'config',
-        description: `\`${name}\` is declared in ${d.file}:${d.line} but no code reads it`,
+        description: `${q(name)} is declared in ${d.file}:${d.line} but no code reads it`,
         snippet: `${name}=${d.value}`,
         location: { file: d.file, line: d.line },
         source: 'api',
@@ -459,3 +462,4 @@ function describeServiceCalls(index: CodeIndex): { findings: Finding[]; signals:
 
 export { findFieldMismatches, findEnvIssues };
 export type { FieldMismatch };
+

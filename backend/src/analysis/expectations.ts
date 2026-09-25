@@ -66,8 +66,10 @@ export function deriveExpectations(evidence: EvidenceAttachment[]): EvidenceExpe
     }
 
     for (const line of text.split(/\r?\n/)) {
-      const m = /(?:\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+)(\/\S*?)(?:\s+(\d{3})\b)?/.exec(line.trim());
-      if (m) out.requestPaths.push({ path: m[1], status: m[2] ? Number(m[2]) : undefined, attachment: attachment.name, line: 0 });
+      const m = /(?:^|\s)(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\/\S*?)(?:\s+(\d{3})\b)?/.exec(line.trim());
+      if (m) {
+        out.requestPaths.push({ path: m[2], status: m[3] ? Number(m[3]) : undefined, attachment: attachment.name, line: 0 });
+      }
     }
 
     for (const dbErr of findDatabaseErrors(text)) {
@@ -98,7 +100,7 @@ export function deriveExpectations(evidence: EvidenceAttachment[]): EvidenceExpe
   out.requestPaths = uniqueBy(out.requestPaths, (r) => r.path);
   out.malformedPaths = uniqueBy(out.malformedPaths, (m) => m.path);
   out.databaseErrors = uniqueBy(out.databaseErrors, (d) => d.message);
-  out.jsonParseFailures = uniqueBy(out.jsonParseFailures, (j) => j.line);
+  out.jsonParseFailures = uniqueBy(out.jsonParseFailures, (j) => `${j.attachment}:${j.line}`);
 
   return out;
 }

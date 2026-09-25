@@ -4,14 +4,21 @@
  */
 
 export const ROUTE_PATTERNS: { framework: string; re: RegExp }[] = [
-  // Express / Fastify / Koa style router. Groups: 1 = method, 2 = quote, 3 = path.
-  { framework: 'express', re: /\b(?:app|router|apiRouter|server)\s*\.\s*(get|post|put|patch|delete|options|head|all)\s*\(\s*(['"`])([^'"`]+)\2/g },
-  { framework: 'fastify', re: /\b(?:app|fastify|server|instance)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(['"`])([^'"`]+)\2/g },
-  { framework: 'koa', re: /\brouter\.(get|post|put|patch|delete)\s*\(\s*(['"`])([^'"`]+)\2/g },
+  // Any object literal method that takes a path-shaped first argument.
+  // Requiring the path to start with `/` keeps `response.json(...)` out.
+  { framework: 'router', re: /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|options|head|all)\s*\(\s*(['"`])(\/[^'"`\s]*)\3/g },
   // Next.js App Router / Pages Router handlers
   { framework: 'next', re: /export\s+default\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\s*\(/g },
-  // Hono
-  { framework: 'hono', re: /\b(?:app|api)\.(get|post|put|patch|delete)\s*\(\s*(['"`])([^'"`]+)\2/g },
+];
+
+/** Imports that identify the web framework behind a router. */
+export const FRAMEWORK_IMPORTS: { name: string; re: RegExp }[] = [
+  { name: 'express', re: /from\s+['"]express['"]|require\(['"]express['"]\)/ },
+  { name: 'fastify', re: /from\s+['"]fastify['"]|require\(['"]fastify['"]\)/ },
+  { name: 'koa', re: /from\s+['"]koa['"]|require\(['"]koa['"]\)/ },
+  { name: 'hono', re: /from\s+['"]hono['"]|require\(['"]hono['"]\)/ },
+  { name: 'next', re: /from\s+['"]next\/|require\(['"]next\// },
+  { name: 'node:http', re: /from\s+['"]node:http['"]|require\(['"]node:http['"]\)/ },
 ];
 
 export const CLIENT_CALL_PATTERNS: { client: string; re: RegExp }[] = [

@@ -3,11 +3,13 @@ import { config } from '../config.js';
 import { readTextFile, walkProject, toPosix } from '../utils/fsSafe.js';
 import {
   CLASS_METHOD, CLIENT_CALL_PATTERNS, CREATE_TABLE, ENV_ACCESS_PATTERNS, ENV_DECL_PATTERN,
-  FRAMEWORK_SIGNATURES, FUNCTION_PATTERNS, IMPORT_FROM, MONGOOSE_FIELD, PREPARED_SQL,
-  PRISMA_FIELD, REQUIRE_CALL, ROUTE_PATTERNS, SEMANTIC_GROUPS, SEQUELIZE_FIELD, STOPWORDS,
-  TEST_PATTERNS,
+  FRAMEWORK_IMPORTS, FRAMEWORK_SIGNATURES, FUNCTION_PATTERNS, IMPORT_FROM, MONGOOSE_FIELD,
+  PREPARED_SQL, PRISMA_FIELD, REQUIRE_CALL, ROUTE_PATTERNS, SEMANTIC_GROUPS, SEQUELIZE_FIELD,
+  STOPWORDS, TEST_PATTERNS,
 } from './patterns.js';
-import { blankNonCode, lineAt, matchBrace, objectKeys, type ObjectKey } from './lexer.js';
+import {
+  blankNonCode, lineAt, matchBrace, matchParen, objectKeys, type ObjectKey,
+} from './lexer.js';
 import type { ExecutionPathEdge, ProjectComponent, ProjectLayer, ProjectMap } from '../types/index.js';
 import { nowIso } from '../utils/time.js';
 import { id } from '../utils/id.js';
@@ -431,52 +433,107 @@ function collectPropertyAccesses(
   return out;
 }
 
-/** Finds the enclosing top-level function of a line, if any. */
-function enclosingFunction(file: IndexedFile, line: number): { name: string | null; start: number; end: number } {
-  const lines = file.blanked.split('\n');
-  for (let ln = line; ln >= 1; ln -= 1) {
-    const text = lines[ln - 1] ?? '';
-    const m = /(?:export\s+)?(?:const|let|var|async\s+function|function)\s+([A-Za-z_$][\w$]*)\s*[=(]/.exec(text)
-      ?? /(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/.exec(text);
-    if (!m) continue;
-    const startOffset = lineAt(file.blanked, 0);
-    void startOffset;
-    // End = the next top-level-ish definition or end of file.
-    let end = file.lines.length;
-    for (let k = ln + 1; k <= file.lines.length; k += 1) {
-      const t = lines[k - 1] ?? '';
-      if (/^(?:export\s+)?(?:const|let|var|async\s+function|function|class)\s/.test(t)) { end = k - 1; break; }
-    }
-    return { name: m[1], start: ln, end };
-  }
-  return { name: null, start: 1, end: file.lines.length };
+export interface FunctionRange {
+  name: string;
+  startLine: number;
+  endLine: number;
+  startOffset: number;
+  endOffset: number;
 }
 
-function collectClientCalls(file: IndexedFile): ClientCall[] {
+/** Declaration shapes we treat as a function/method boundary. */
+const FN_DECL_PATTERNS: RegExp[] = [
+  /(?:^|[^\w$.])(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g,
+  /(?:^|[^\w$.])(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\*?\s*\(|[A-Za-z_$][\w$]*\s*=>)/g,
+  /(?:^|[^\w$.])(?:public\s+|private\s+|protected\s+|static\s+|async\s+|get\s+|set\s+)*([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{\s*$/gm,
+];
+
+/**
+ * Finds every function body in a file by brace matching.
+ * This is what makes "which reads happen inside this function" answerable
+ * without a full parser.
+ */
+export function collectFunctionRanges(blanked: string): FunctionRange[] {
+  const out: FunctionRange[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of FN_DECL_PATTERNS) {
+    pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(blanked)) !== null) {
+      const name = m[1];
+      if (!name || name === 'if' || name === 'for' || name === 'while' || name === 'switch'
+        || name === 'catch' || name === 'return' || name === 'function' || name === 'constructor') continue;
+
+      const declStart = m.index + m[0].indexOf(name);
+      // Find the body brace: first `{` after the parameter list closes.
+      const parenStart = blanked.indexOf('(', declStart);
+      if (parenStart === -1) continue;
+      const parenEnd = matchParen(blanked, parenStart);
+      if (parenEnd === -1) continue;
+      const arrowBody = blanked.indexOf('=>', parenEnd);
+      const braceOffset = (() => {
+        if (arrowBody !== -1 && arrowBody < parenEnd + 4) {
+          const afterArrow = blanked.indexOf('{', arrowBody);
+          return afterArrow;
+        }
+        return blanked.indexOf('{', parenEnd);
+      })();
+      if (braceOffset === -1 || braceOffset > declStart + 4000) continue;
+      // Reject control-flow look-alikes that slipped through.
+      const between = blanked.slice(parenEnd + 1, braceOffset);
+      if (/[;}]/.test(between)) continue;
+      const close = matchBrace(blanked, braceOffset);
+      if (close === -1) continue;
+      if (close - declStart > 200_000) continue;
+
+      const startLine = lineAt(blanked, declStart);
+      const endLine = lineAt(blanked, close);
+      const key = `${startLine}:${endLine}:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name, startLine, endLine, startOffset: declStart, endOffset: close });
+      pattern.lastIndex = close;
+    }
+  }
+
+  return out.sort((a, b) => (a.endOffset - a.startOffset) - (b.endOffset - b.startOffset));
+}
+
+/** Innermost function containing a line, or a whole-file fallback. */
+export function enclosingFunctionRange(
+  ranges: FunctionRange[],
+  line: number,
+  fileLineCount: number,
+): { name: string | null; start: number; end: number } {
+  for (const range of ranges) {
+    if (line >= range.startLine && line <= range.endLine) {
+      return { name: range.name, start: range.startLine, end: range.endLine };
+    }
+  }
+  return { name: null, start: 1, end: fileLineCount };
+}
+
+function collectClientCalls(file: IndexedFile, fnRanges: FunctionRange[]): ClientCall[] {
   const out: ClientCall[] = [];
   if (!/\.[cm]?[jt]sx?$/.test(file.rel)) return out;
   const fileEnvRefs = collectEnvRefs(file);
+  const blankedLines = file.blanked.split('\n');
 
   for (const { client, re } of CLIENT_CALL_PATTERNS) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(file.blanked)) !== null) {
       const line = lineAt(file.blanked, m.index);
-      const fn = enclosingFunction(file, line);
+      const fn = enclosingFunctionRange(fnRanges, line, file.lines.length);
       const argStart = file.blanked.indexOf('(', m.index);
-      const argEnd = argStart === -1 ? -1 : (() => {
-        let depth = 0;
-        for (let i = argStart; i < file.blanked.length; i += 1) {
-          if (file.blanked[i] === '(') depth += 1;
-          else if (file.blanked[i] === ')') { depth -= 1; if (depth === 0) return i; }
-        }
-        return -1;
-      })();
-      const urlExpression = argEnd === -1
-        ? file.source.slice(argStart + 1, argStart + 160)
+      const argEnd = argStart === -1 ? -1 : matchParen(file.blanked, argStart);
+      const urlExpression = argEnd === -1 || argStart === -1
+        ? (blankedLines[line - 1] ?? '').trim()
         : file.source.slice(argStart + 1, argEnd);
-      const urlMatch = /(?:['"`])([^'"`$]*)['"`]/.exec(urlExpression);
-      const url = urlMatch ? urlMatch[1] : null;
+      // Read the URL from the *original* source so template literals survive.
+      const urlMatch = /(?:['"`])((?:[^'"`$]|\$\{[^}]*\})+)(?:['"`])/.exec(urlExpression);
+      const url = urlMatch ? normaliseUrlTemplate(urlMatch[1]) : null;
       const method = m[1] ? m[1].toUpperCase() : 'GET';
 
       out.push({
@@ -497,6 +554,12 @@ function collectClientCalls(file: IndexedFile): ClientCall[] {
     }
   }
   return out;
+}
+
+/** `${API_BASE}/api/x` → `/api/x` so it can be matched against declared routes. */
+function normaliseUrlTemplate(raw: string): string {
+  const withoutInterpolations = raw.replace(/\$\{[^}]*\}/g, '').replace(/\/\/+/g, '/');
+  return withoutInterpolations;
 }
 
 function collectSqlArtifacts(file: IndexedFile): { tables: TableDef[]; queries: QueryRef[] } {
