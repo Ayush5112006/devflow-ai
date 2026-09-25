@@ -309,13 +309,15 @@ function buildComparison(
   };
 
   return {
-    baseline,
-    fixflow,
+    baseline: { ...baseline, totalMinutes: baselineMinutes },
+    fixflow: { ...fixflow, totalMinutes: Math.round(fixflowMinutes * 10) / 10 },
     deltas: {
       durationReductionPct: pct(baseline.totalDurationMs, fixflow.totalDurationMs),
       manualStepReductionPct: pct(baseline.manualSteps, fixflow.manualSteps),
       contextSwitchReductionPct: pct(baseline.contextSwitches, fixflow.contextSwitches),
       reworksAvoided: baseline.reworks - fixflow.reworks,
+      timeSavedMinutes: Math.round((baseline.totalDurationMs - fixflow.totalDurationMs) / 60_000),
+      manualStepsReduced: baseline.manualSteps - fixflow.manualSteps,
     },
     notes: [
       `FixFlow measured ${fixflowMinutes.toFixed(1)} minutes against a ${baselineMinutes}-minute manual estimate.`,

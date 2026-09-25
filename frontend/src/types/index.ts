@@ -212,6 +212,39 @@ export interface Report {
   markdown: string;
 }
 
+export interface WorkflowComparison {
+  baseline: {
+    label: string;
+    totalDurationMs: number;
+    totalMinutes: number;  // kept for backward compat
+    manualSteps: number;
+    contextSwitches: number;
+    filesTouchedByHand: number;
+    testsRun: number;
+    reworks: number;
+    source: string;
+  };
+  fixflow: {
+    label: string;
+    totalDurationMs: number;
+    totalMinutes: number;  // kept for backward compat
+    manualSteps: number;
+    contextSwitches: number;
+    filesTouchedByHand: number;
+    testsRun: number;
+    reworks: number;
+  };
+  deltas: {
+    durationReductionPct: number;
+    manualStepReductionPct: number;
+    contextSwitchReductionPct: number;
+    reworksAvoided: number;
+    timeSavedMinutes: number;    // kept for backward compat
+    manualStepsReduced: number;  // kept for backward compat
+  };
+  notes: string[];
+}
+
 export interface Metrics {
   totalWorkflowDurationMs: number;
   investigationDurationMs: number;
@@ -229,12 +262,10 @@ export interface Metrics {
   manualSteps: number;
   manualStepsAutomated: number;
   manualStepsAutomatedPct: number;
-  comparison: {
-    baseline: { totalMinutes: number; manualSteps: number };
-    fixflow: { totalMinutes: number; manualSteps: number };
-    deltas: { timeSavedMinutes: number; manualStepsReduced: number };
-    notes: string[];
-  } | null;
+  reworkCycles?: number;
+  comparison: WorkflowComparison | null;
+  stageTimings?: unknown[];
+  measuredAt?: string;
 }
 
 export interface ActivityEntry {

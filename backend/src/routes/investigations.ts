@@ -7,6 +7,7 @@ import { loadDemoBugs, PROJECTS, resolveProjectPath } from '../repositories/demo
 import { badRequest } from '../utils/errors.js';
 import { nowIso } from '../utils/time.js';
 import { id as makeId } from '../utils/id.js';
+import { getGitInfo } from '../utils/git.js';
 import type { BugReport, EvidenceAttachment, Severity } from '../types/index.js';
 
 export const router = Router();
@@ -265,6 +266,31 @@ router.post('/investigations/demo/:bugId/quickstart', async (req, res, next) => 
     });
 
     res.status(201).json({ investigation: inv });
+  } catch (err) { next(err); }
+});
+
+/* ---- Git information ---- */
+router.get('/investigations/:id/git', async (req, res, next) => {
+  try {
+    const inv = investigationService.get(req.params.id);
+    if (!inv) return next(badRequest(`Not found: ${req.params.id}`));
+    const info = await getGitInfo(inv.workspacePath, inv.id);
+    res.json({ git: info });
+  } catch (err) { next(err); }
+});
+
+/* ---- Re-plan with feedback ---- */
+router.post('/investigations/:id/replan', async (req, res, next) => {
+  try {
+    const { feedback } = z.object({ feedback: z.string().min(1).max(1000) }).parse(req.body);
+    const inv = investigationService.get(req.params.id);
+    if (!inv) return next(badRequest(`Not found: ${req.params.id}`));
+    if (inv.status !== 'awaiting_approval') {
+      return next(badRequest(`Investigation is not awaiting approval (state: ${inv.status})`));
+    }
+    // Record feedback and rebuild the change plan with the note attached.
+    await investigationService.replan(req.params.id, feedback);
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

@@ -122,6 +122,38 @@ export class InvestigationService {
     return approval;
   }
 
+  /**
+   * Regenerate the change plan with developer feedback incorporated.
+   * Only allowed when awaiting_approval. Does not restart the full investigation.
+   */
+  async replan(id: string, feedback: string): Promise<void> {
+    const inv = this.getOrThrow(id);
+    if (inv.status !== 'awaiting_approval') {
+      throw new Error(`Investigation ${id} is not awaiting approval (state: ${inv.status})`);
+    }
+    this.activity(inv, 'manager', 'info', `Developer requested plan changes: "${feedback.slice(0, 120)}"`);
+    const index = (inv as any).index;
+    const expectations = (inv as any).expectations;
+    if (!index || !expectations) {
+      throw new Error('Project index not available for replan — cannot regenerate plan without analysis context.');
+    }
+    this.startStage(inv, 'changePlan');
+    inv.changePlan = generateChangePlan({
+      investigationId: inv.id,
+      rootCause: inv.rootCause!,
+      index,
+      expectations,
+    });
+    // Attach feedback as a "considered and rejected" note so it's visible in the UI
+    inv.changePlan.consideredAndRejected.unshift({
+      statement: `Developer feedback: "${feedback}"`,
+      why: 'Plan regenerated with this feedback in mind. Review the new changes above.',
+    });
+    this.finishStage(inv, 'changePlan');
+    this.activity(inv, 'manager', 'success', `Change plan regenerated with ${inv.changePlan.changes.length} change(s)`);
+    this.emit(inv, 'plan.updated', { changePlan: inv.changePlan, status: 'ready' });
+  }
+
   async implement(id: string): Promise<void> {
     const inv = this.getOrThrow(id);
     if (!inv.approval) throw new Error('No approval record');

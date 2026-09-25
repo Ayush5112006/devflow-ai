@@ -505,6 +505,7 @@ export interface WorkflowComparison {
   baseline: {
     label: string;
     totalDurationMs: number;
+    totalMinutes: number;
     manualSteps: number;
     contextSwitches: number;
     filesTouchedByHand: number;
@@ -515,6 +516,7 @@ export interface WorkflowComparison {
   fixflow: {
     label: string;
     totalDurationMs: number;
+    totalMinutes: number;
     manualSteps: number;
     contextSwitches: number;
     filesTouchedByHand: number;
@@ -526,6 +528,8 @@ export interface WorkflowComparison {
     manualStepReductionPct: number;
     contextSwitchReductionPct: number;
     reworksAvoided: number;
+    timeSavedMinutes: number;
+    manualStepsReduced: number;
   };
   notes: string[];
 }
