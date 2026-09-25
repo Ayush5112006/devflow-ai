@@ -15,25 +15,9 @@ export function SettingsPage() {
 
   return (
     <div className="page-content">
-      <div className="card-grid-sidebar" style={{ '--sidebar-width': '200px' } as any}>
-        {/* Sidebar nav */}
-        <div style={{ gridColumn: '2', gridRow: '1' }}>
-          <div className="panel" style={{ padding: 8 }}>
-            {SETTINGS_SECTIONS.map((s) => (
-              <button
-                key={s}
-                className={`sidenav-link ${section === s ? 'active' : ''}`}
-                style={{ width: '100%', margin: '2px 0' }}
-                onClick={() => setSection(s)}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </div>
-
+      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
         {/* Content */}
-        <div style={{ gridColumn: '1', gridRow: '1' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           {section === 'General' && (
             <Card title="General Settings">
               <div className="stack" style={{ gap: 20 }}>
@@ -214,6 +198,22 @@ export function SettingsPage() {
               </div>
             </Card>
           )}
+        </div>
+
+        {/* Settings sidebar nav */}
+        <div style={{ flex: 'none', width: 190 }}>
+          <div className="panel" style={{ padding: 8 }}>
+            {SETTINGS_SECTIONS.map((s) => (
+              <button
+                key={s}
+                className={`sidenav-link ${section === s ? 'active' : ''}`}
+                style={{ width: '100%', margin: '2px 0' }}
+                onClick={() => setSection(s)}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>

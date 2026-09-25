@@ -1,6 +1,8 @@
 # FixFlow AI
-### Agentic Developer Bug Resolution & Verification Platform
-*IBM Bob 2.0 AI Innovation Hackathon*
+### AI Software Engineering Operating System
+*From production bug to verified fix — one connected agentic workflow.*
+
+> **IBM Bob 2.0 AI Innovation Hackathon**
 
 ---
 
