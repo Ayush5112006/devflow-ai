@@ -88,6 +88,10 @@ export interface ClientCall {
   line: number;
   urlExpression: string;
   url: string | null;
+  /** How `url` was derived, so findings can explain themselves. */
+  urlSource: 'literal' | 'helper' | 'template-base' | 'unknown';
+  /** `name@file:line` of the URL builder that was inlined, when applicable. */
+  helper: string | null;
   envRefs: EnvRef[];
   /** Enclosing function range, used to scope property accesses. */
   functionName: string | null;
@@ -900,10 +904,12 @@ export async function buildCodeIndex(root: string): Promise<CodeIndex> {
   const tests: TestDef[] = [];
   const importEdges: ImportEdge[] = [];
 
+  const urlHelpers = collectUrlHelpers(files);
+
   for (const file of files.values()) {
     const fnRanges = collectFunctionRanges(file.blanked);
     for (const route of collectRoutes(file, fnRanges)) routes.push(route);
-    for (const call of collectClientCalls(file, fnRanges)) clientCalls.push(call);
+    for (const call of collectClientCalls(file, fnRanges, urlHelpers)) clientCalls.push(call);
     for (const sym of collectSymbols(file)) {
       const list = symbols.get(sym.name) ?? [];
       list.push(sym);

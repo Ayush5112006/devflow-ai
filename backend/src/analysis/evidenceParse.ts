@@ -60,17 +60,19 @@ export function parseStackFrames(text: string): ParsedFrame[] {
 export function parseRuntimeErrors(text: string): ParsedRuntimeError[] {
   const out: ParsedRuntimeError[] = [];
   for (const pattern of RUNTIME_ERROR_PATTERNS) {
-    pattern.re.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = pattern.re.exec(text)) !== null) {
+    // These patterns are intentionally non-global; scan line by line so one
+    // hit per line is collected and `exec` can never spin on lastIndex.
+    for (const { line, raw } of splitLines(text)) {
+      const m = pattern.re.exec(raw);
+      if (!m) continue;
       const detail = pattern.capture(m);
       out.push({
         kind: pattern.kind,
-        errorName: m[1] ?? '',
-        message: m[0].trim().slice(0, 300),
-        subject: detail.property ?? detail.symbol ?? detail.message ?? '',
+        errorName: detail.errorName ?? m[1] ?? '',
+        message: (m[0].trim() || detail.message || '').slice(0, 300),
+        subject: detail.property ?? detail.symbol ?? detail.object ?? detail.message ?? '',
         raw: m[0].trim(),
-        offset: m.index,
+        offset: line,
       });
     }
   }
