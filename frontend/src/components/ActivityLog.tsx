@@ -6,25 +6,25 @@ interface Props {
 }
 
 const LEVEL_COLOR: Record<string, string> = {
-  info: 'text-slate-400',
-  success: 'text-emerald-400',
-  warn: 'text-yellow-400',
-  error: 'text-red-400',
+  info: 'var(--muted)',
+  success: 'var(--accent)',
+  warn: 'var(--warn)',
+  error: 'var(--danger)',
 };
 
 const AGENT_COLOR: Record<string, string> = {
-  manager: 'text-purple-400',
-  code: 'text-blue-400',
-  api: 'text-cyan-400',
-  database: 'text-orange-400',
-  test: 'text-green-400',
-  evidence: 'text-yellow-400',
-  history: 'text-pink-400',
-  rootCause: 'text-red-400',
-  implementation: 'text-indigo-400',
-  verification: 'text-teal-400',
-  regression: 'text-amber-400',
-  reporting: 'text-lime-400',
+  manager: '#c084fc',
+  code: '#60a5fa',
+  api: '#22d3ee',
+  database: '#fb923c',
+  test: '#4ade80',
+  evidence: '#fbbf24',
+  history: '#f472b6',
+  rootCause: '#f87171',
+  implementation: '#818cf8',
+  verification: '#2dd4bf',
+  regression: '#fcd34d',
+  reporting: '#a3e635',
 };
 
 function formatTime(iso: string): string {
@@ -38,21 +38,25 @@ function formatTime(iso: string): string {
 export function ActivityLog({ entries }: Props) {
   if (entries.length === 0) {
     return (
-      <div className="text-sm text-slate-500 italic py-4 text-center">
-        Waiting for activity…
+      <div className="empty">
+        <p className="empty-title">No activity yet</p>
+        <p className="empty-text">
+          Agent events appear here as the investigation runs. This log is stored with the
+          investigation, so it stays available after a reload.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-0.5 font-mono text-xs max-h-96 overflow-y-auto">
+    <div className="log" role="log" aria-live="polite" aria-label="Agent activity">
       {entries.map((e) => (
-        <div key={e.id} className="flex gap-2 py-0.5 hover:bg-slate-700/30 px-1 rounded">
-          <span className="text-slate-500 shrink-0">[{formatTime(e.at)}]</span>
-          <span className={`shrink-0 ${AGENT_COLOR[e.agent] ?? 'text-slate-400'}`}>
+        <div key={e.id} className="log-row">
+          <span className="log-time">{formatTime(e.at)}</span>
+          <span className="log-agent" style={{ color: AGENT_COLOR[e.agent] ?? 'var(--muted)' }}>
             {e.agent}
           </span>
-          <span className={`${LEVEL_COLOR[e.level] ?? 'text-slate-300'} break-all`}>
+          <span className="log-msg" style={{ color: LEVEL_COLOR[e.level] ?? 'var(--muted)' }}>
             {e.message}
           </span>
         </div>

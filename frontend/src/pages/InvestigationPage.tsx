@@ -7,6 +7,8 @@ import { Badge, severityBadge, statusBadge } from '../components/Badge.js';
 import { LoadingSpinner } from '../components/LoadingSpinner.js';
 import { PipelineDiagram } from '../components/PipelineDiagram.js';
 import { ActivityLog } from '../components/ActivityLog.js';
+import { StageStepper, STAGE_ORDER, STAGE_LABEL, stageTone } from '../components/StageStepper.js';
+import type { ActivityEntry, Investigation, StageId } from '../types/index.js';
 
 /**
  * Human-readable elapsed time. Sub-minute runs used to round to a literal
@@ -21,26 +23,73 @@ function duration(ms: number): string {
   return sec ? `${min}m ${sec}s` : `${min}m`;
 }
 
+/** Which stage the investigation is currently sitting in. */
+function currentStage(inv: Investigation): StageId | null {
+  if (inv.status === 'awaiting_approval') return 'approval';
+  const running = STAGE_ORDER.find((id) => inv.stages[id]?.status === 'running');
+  if (running) return running;
+  if (inv.status === 'implementing') return 'implementation';
+  if (inv.status === 'completed') return 'report';
+  return null;
+}
+
+const TABS: { id: string; label: string; stage: StageId }[] = [
+  { id: 'pipeline', label: 'Pipeline', stage: 'projectAnalysis' },
+  { id: 'findings', label: 'Findings', stage: 'investigation' },
+  { id: 'rootcause', label: 'Root Cause', stage: 'rootCause' },
+  { id: 'changeplan', label: 'Change Plan', stage: 'changePlan' },
+  { id: 'implementation', label: 'Implementation', stage: 'implementation' },
+  { id: 'verification', label: 'Verification', stage: 'verification' },
+  { id: 'regression', label: 'Regression', stage: 'regression' },
+  { id: 'report', label: 'Report', stage: 'report' },
+];
+
+/** Tabs stay present even before data exists, so the structure does not shift. */
+function tabAvailable(id: string, inv: Investigation): boolean {
+  switch (id) {
+    case 'rootcause': return !!inv.rootCause;
+    case 'changeplan': return !!inv.changePlan;
+    case 'implementation': return !!inv.implementation;
+    case 'verification': return !!inv.verification;
+    case 'regression': return !!inv.regression;
+    case 'report': return !!inv.report;
+    default: return true;
+  }
+}
+
 export function InvestigationPage() {
   const { id } = useParams<{ id: string }>();
   const { investigation: inv, activity, loading, error, refresh } = useInvestigation(id);
   const [activeTab, setActiveTab] = useState<string>('pipeline');
   const [approving, setApproving] = useState(false);
   const [implementing, setImplementing] = useState(false);
-  const [approvalNote, setApprovalNote] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   if (loading) return <LoadingSpinner message="Loading investigation…" />;
-  if (error) return <div className="text-red-400 text-sm p-4">{error}</div>;
-  if (!inv) return <div className="text-slate-400 text-sm p-4">Investigation not found.</div>;
+  if (error) return <div className="alert" role="alert">{error}</div>;
+  if (!inv) {
+    return (
+      <div className="empty">
+        <p className="empty-title">Investigation not found</p>
+        <p className="empty-text">It may have been cleared by a backend restart. Investigations are currently held in memory.</p>
+        <Link to="/" className="btn btn-primary btn-sm" style={{ marginTop: 6 }}>Back to dashboard</Link>
+      </div>
+    );
+  }
 
-  async function approve() {
+  const stage = currentStage(inv);
+  const awaitingApproval = inv.status === 'awaiting_approval';
+  const awaitingApply = (inv.status === 'approved' || inv.status === 'implementing') && !inv.implementation;
+
+  async function approve(note: string) {
     if (!id) return;
     setApproving(true);
+    setActionError(null);
     try {
-      await api.approve(id, 'developer', approvalNote);
+      await api.approve(id, 'developer', note);
       refresh();
     } catch (e) {
-      alert(`Approval failed: ${e instanceof Error ? e.message : String(e)}`);
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setApproving(false);
     }
@@ -49,134 +98,151 @@ export function InvestigationPage() {
   async function implement() {
     if (!id) return;
     setImplementing(true);
+    setActionError(null);
     try {
       await api.implement(id);
       refresh();
     } catch (e) {
-      alert(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
       setImplementing(false);
     }
   }
 
-  const tabs = [
-    { id: 'pipeline', label: 'Pipeline' },
-    { id: 'findings', label: `Findings (${inv.findings.length})` },
-    { id: 'rootcause', label: 'Root Cause' },
-    { id: 'changeplan', label: 'Change Plan' },
-    { id: 'implementation', label: 'Implementation' },
-    { id: 'verification', label: 'Verification' },
-    { id: 'regression', label: 'Regression' },
-    { id: 'report', label: 'Report' },
-  ].filter((t) => {
-    if (t.id === 'rootcause' && !inv.rootCause) return false;
-    if (t.id === 'changeplan' && !inv.changePlan) return false;
-    if (t.id === 'implementation' && !inv.implementation) return false;
-    if (t.id === 'verification' && !inv.verification) return false;
-    if (t.id === 'regression' && !inv.regression) return false;
-    if (t.id === 'report' && !inv.report) return false;
-    return true;
-  });
+  function onTabKey(e: React.KeyboardEvent, index: number) {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const dir = e.key === 'ArrowRight' ? 1 : -1;
+    const next = (index + dir + TABS.length) % TABS.length;
+    setActiveTab(TABS[next].id);
+    document.getElementById(`tab-${TABS[next].id}`)?.focus();
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Link to="/" className="text-xs text-slate-500 hover:text-slate-300">Dashboard</Link>
-            <span className="text-slate-600">›</span>
-            <span className="text-xs text-slate-400">{id?.slice(0, 12)}</span>
+    <div className="stack" style={{ gap: 22 }}>
+      <header>
+        <nav className="crumbs" aria-label="Breadcrumb">
+          <Link to="/">Dashboard</Link>
+          <span aria-hidden="true">›</span>
+          <span className="mono">{inv.projectName}</span>
+        </nav>
+        <h1 className="page-title">{inv.bug.title}</h1>
+        <div className="meta-row">
+          {severityBadge(inv.bug.severity)}
+          {statusBadge(inv.status)}
+          <span className="chip mono">{id?.slice(0, 12)}</span>
+          {stage && <span className="chip">stage: {STAGE_LABEL[stage]}</span>}
+        </div>
+      </header>
+
+      {actionError && <div className="alert" role="alert"><span>{actionError}</span></div>}
+
+      {awaitingApproval && (
+        <div className="banner banner-warn">
+          <div>
+            <p className="banner-title" style={{ color: 'var(--warn)' }}>⏸ This step needs you</p>
+            <p className="banner-text">
+              Nothing has been written yet. Review the change plan — it contains{' '}
+              <strong>{inv.changePlan?.changes.length ?? 0}</strong> change
+              {inv.changePlan?.changes.length === 1 ? '' : 's'} — then approve to let the
+              implementation agent apply exactly that plan.
+            </p>
           </div>
-          <h1 className="text-xl font-bold text-white">{inv.bug.title}</h1>
-          <div className="flex items-center gap-2 mt-2">
-            {severityBadge(inv.bug.severity)}
-            {statusBadge(inv.status)}
-            <span className="text-xs text-slate-500">{inv.projectName}</span>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn btn-sm" onClick={() => setActiveTab('changeplan')}>Review plan</button>
+            <button className="btn btn-warn btn-sm" onClick={() => approve('')} disabled={approving}>
+              {approving ? 'Approving…' : '✓ Approve fix plan'}
+            </button>
           </div>
         </div>
-        {/* Approval CTA */}
-        {inv.status === 'awaiting_approval' && (
-          <div className="shrink-0">
-            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 space-y-3 min-w-64">
-              <p className="text-sm font-semibold text-yellow-300">⏸ Awaiting Approval</p>
-              <p className="text-xs text-slate-400">Review the change plan and approve to proceed.</p>
-              <textarea
-                value={approvalNote}
-                onChange={(e) => setApprovalNote(e.target.value)}
-                placeholder="Optional note…"
-                rows={2}
-                className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-yellow-500 resize-none"
-              />
-              <button
-                onClick={() => { setActiveTab('changeplan'); }}
-                className="w-full py-1.5 text-xs text-slate-300 border border-slate-600 rounded-lg hover:bg-slate-700"
-              >
-                Review Change Plan ↗
-              </button>
-              <button
-                onClick={approve}
-                disabled={approving}
-                className="w-full py-2 bg-green-600 hover:bg-green-500 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
-              >
-                {approving ? 'Approving…' : '✓ Approve Fix Plan'}
-              </button>
-            </div>
-          </div>
-        )}
-        {/*
-          The service moves straight from `awaiting_approval` to `implementing`,
-          so `approved` is never observed here even though it exists in the
-          status union. Gating on it made this panel unreachable and left the
-          workflow dead-ended with no way forward.
-        */}
-        {(inv.status === 'approved' || inv.status === 'implementing') && !inv.implementation && (
-          <div className="shrink-0">
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 space-y-3">
-              <p className="text-sm font-semibold text-blue-300">✓ Approved</p>
-              <p className="text-xs text-slate-400">
-                Applying the approved plan. Nothing else is written to the workspace.
-              </p>
-              <button
-                onClick={implement}
-                disabled={implementing}
-                className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
-              >
-                {implementing ? 'Implementing…' : 'Apply Fix'}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-700 pb-0 overflow-x-auto">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`px-4 py-2 text-xs font-medium whitespace-nowrap rounded-t-lg transition-colors ${
-              activeTab === t.id
-                ? 'bg-slate-700 text-white'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
-            }`}
-          >
-            {t.label}
+      {/*
+        approve() transitions straight to `implementing`, so `approved` is never
+        observed even though it exists in the status union. Gating only on
+        `approved` made the control unreachable and dead-ended the workflow.
+      */}
+      {awaitingApply && (
+        <div className="banner banner-info">
+          <div>
+            <p className="banner-title" style={{ color: 'var(--info)' }}>✓ Plan approved</p>
+            <p className="banner-text">
+              The decision is recorded against plan hash{' '}
+              <span className="mono">{inv.changePlan?.planHash.slice(0, 12)}</span>. Applying writes
+              only the approved edits to the isolated workspace.
+            </p>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={implement} disabled={implementing}>
+            {implementing ? 'Applying…' : 'Apply fix'}
           </button>
-        ))}
-      </div>
+        </div>
+      )}
 
-      {/* Tab content */}
+      {inv.status === 'completed' && (
+        <div className="banner banner-ok">
+          <div>
+            <p className="banner-title" style={{ color: 'var(--accent)' }}>✓ Investigation finished</p>
+            <p className="banner-text">
+              Implementation applied {inv.implementation?.appliedChanges.length ?? 0} of{' '}
+              {inv.changePlan?.changes.length ?? 0} planned change
+              {inv.changePlan?.changes.length === 1 ? '' : 's'}. Check the verification and regression
+              tabs before trusting the result.
+            </p>
+          </div>
+          <button className="btn btn-sm" onClick={() => setActiveTab('verification')}>See checks</button>
+        </div>
+      )}
+
+      <StageStepper
+        stages={inv.stages}
+        activeStage={stage}
+        onSelect={(s) => {
+          const match = TABS.find((t) => t.stage === s);
+          if (match && tabAvailable(match.id, inv)) setActiveTab(match.id);
+          else if (s === 'approval') setActiveTab('changeplan');
+        }}
+      />
+
       <div>
-        {activeTab === 'pipeline' && <PipelineTab inv={inv} activity={activity} />}
-        {activeTab === 'findings' && <FindingsTab inv={inv} />}
-        {activeTab === 'rootcause' && <RootCauseTab inv={inv} />}
-        {activeTab === 'changeplan' && (
-          <ChangePlanTab inv={inv} onApprove={approve} approving={approving} approvalNote={approvalNote} setApprovalNote={setApprovalNote} />
-        )}
-        {activeTab === 'implementation' && <ImplementationTab inv={inv} />}
-        {activeTab === 'verification' && <VerificationTab inv={inv} />}
-        {activeTab === 'regression' && <RegressionTab inv={inv} />}
-        {activeTab === 'report' && <ReportTab inv={inv} />}
+        <div className="tabs" role="tablist" aria-label="Investigation sections">
+          {TABS.map((t, i) => {
+            const available = tabAvailable(t.id, inv);
+            const tone = stageTone(inv.stages[t.stage]?.status, stage === t.stage);
+            const dotClass =
+              tone === 'done' ? 'tab-dot-done'
+              : tone === 'fail' ? 'tab-dot-fail'
+              : tone === 'active' || tone === 'wait' ? 'tab-dot-active'
+              : '';
+            return (
+              <button
+                key={t.id}
+                id={`tab-${t.id}`}
+                role="tab"
+                aria-selected={activeTab === t.id}
+                aria-controls={`panel-${t.id}`}
+                tabIndex={activeTab === t.id ? 0 : -1}
+                onKeyDown={(e) => onTabKey(e, i)}
+                onClick={() => setActiveTab(t.id)}
+                className={`tab ${available ? '' : 'tab-idle'}`}
+              >
+                <span className={`tab-dot ${dotClass}`} aria-hidden="true" />
+                {t.label}
+                {t.id === 'findings' && <span className="tab-count">{inv.findings.length}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        <div id={`panel-${activeTab}`} role="tabpanel" aria-labelledby={`tab-${activeTab}`} style={{ paddingTop: 18 }}>
+          {activeTab === 'pipeline' && <PipelineTab inv={inv} activity={activity} />}
+          {activeTab === 'findings' && <FindingsTab inv={inv} />}
+          {activeTab === 'rootcause' && <RootCauseTab inv={inv} />}
+          {activeTab === 'changeplan' && <ChangePlanTab inv={inv} onApprove={approve} approving={approving} />}
+          {activeTab === 'implementation' && <ImplementationTab inv={inv} />}
+          {activeTab === 'verification' && <VerificationTab inv={inv} />}
+          {activeTab === 'regression' && <RegressionTab inv={inv} />}
+          {activeTab === 'report' && <ReportTab inv={inv} />}
+        </div>
       </div>
     </div>
   );
@@ -186,35 +252,51 @@ export function InvestigationPage() {
 /* Tab panels                                                         */
 /* ------------------------------------------------------------------ */
 
-import type { ActivityEntry, Investigation } from '../types/index.js';
+function Pending({ what, hint }: { what: string; hint: string }) {
+  return (
+    <div className="empty">
+      <p className="empty-title">{what} not available yet</p>
+      <p className="empty-text">{hint}</p>
+    </div>
+  );
+}
 
 function PipelineTab({ inv, activity }: { inv: Investigation; activity: ActivityEntry[] }) {
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <div className="lg:col-span-1">
-        <Card title="Workflow Pipeline">
-          <PipelineDiagram stages={inv.stages} agents={inv.agents} />
-        </Card>
-      </div>
-      <div className="lg:col-span-2 space-y-4">
-        <Card title="Agent Activity">
+    <div className="card-grid-sidebar">
+      <div className="stack">
+        <Card title="Agent activity">
           <ActivityLog entries={activity} />
         </Card>
-        {inv.projectMap && (
-          <Card title="Project Map">
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div><span className="text-slate-500">Files indexed:</span> <span className="text-white">{inv.projectMap.fileCount}</span></div>
-              <div><span className="text-slate-500">Frameworks:</span> <span className="text-white">{inv.projectMap.frameworks.join(', ') || '—'}</span></div>
-              <div><span className="text-slate-500">Test runner:</span> <span className="text-white">{inv.projectMap.testRunner || '—'}</span></div>
-              <div><span className="text-slate-500">Languages:</span> <span className="text-white">{Object.keys(inv.projectMap.languageBreakdown).join(', ')}</span></div>
-            </div>
-          </Card>
-        )}
         {inv.errors.length > 0 && (
-          <Card title="Errors">
-            {inv.errors.map((e, i) => (
-              <div key={i} className="text-xs text-red-400 font-mono py-1">{e.message}</div>
-            ))}
+          <div className="panel">
+            <div className="panel-head">
+              <h3 className="panel-title" style={{ color: 'var(--danger)' }}>Blocking errors</h3>
+              <Badge variant="danger" dot>{inv.errors.length}</Badge>
+            </div>
+            <div className="panel-body stack-sm">
+              {inv.errors.map((e, i) => (
+                <div key={i} className="alert">
+                  <span className="mono">{e.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="stack">
+        <Card title="Stage detail">
+          <PipelineDiagram stages={inv.stages} agents={inv.agents} />
+        </Card>
+        {inv.projectMap && (
+          <Card title="Indexed project">
+            <dl className="kv">
+              <dt>Files</dt><dd>{inv.projectMap.fileCount}</dd>
+              <dt>Frameworks</dt><dd>{inv.projectMap.frameworks.join(', ') || '—'}</dd>
+              <dt>Test runner</dt><dd>{inv.projectMap.testRunner || '—'}</dd>
+              <dt>Languages</dt><dd>{Object.keys(inv.projectMap.languageBreakdown).join(', ') || '—'}</dd>
+            </dl>
           </Card>
         )}
       </div>
@@ -224,94 +306,90 @@ function PipelineTab({ inv, activity }: { inv: Investigation; activity: Activity
 
 function FindingsTab({ inv }: { inv: Investigation }) {
   const findings = inv.findings.filter((f) => f.severity !== 'info');
+  if (findings.length === 0) {
+    return <Pending what="Findings" hint="The analysis agents have not reported anything actionable yet." />;
+  }
   return (
-    <div className="space-y-3">
-      {findings.length === 0 ? (
-        <p className="text-slate-500 text-sm">No high-severity findings yet.</p>
-      ) : (
-        findings.map((f) => (
-          <div key={f.id} className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-2">
-            <div className="flex items-start justify-between gap-2">
-              <p className="text-sm font-semibold text-white">{f.title}</p>
-              <div className="flex items-center gap-1 shrink-0">
-                <Badge variant={f.severity === 'high' ? 'danger' : f.severity === 'medium' ? 'warn' : 'info'}>{f.severity}</Badge>
-                <Badge variant="muted">{(f.confidence * 100).toFixed(0)}%</Badge>
+    <div className="stack">
+      {findings.map((f) => (
+        <article key={f.id} className="panel">
+          <div className="panel-body stack-sm">
+            <div className="spread">
+              <h3 className="page-title-sm">{f.title}</h3>
+              <div className="row" style={{ gap: 6 }}>
+                <Badge variant={f.severity === 'high' ? 'danger' : f.severity === 'medium' ? 'warn' : 'info'} dot>
+                  {f.severity}
+                </Badge>
+                <Badge variant="muted">{(f.confidence * 100).toFixed(0)}% confidence</Badge>
               </div>
             </div>
-            <p className="text-xs text-slate-400 whitespace-pre-line">{f.summary}</p>
-            {f.impact && <p className="text-xs text-slate-500 italic">{f.impact}</p>}
+            <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{f.summary}</p>
+            {f.impact && <p className="subtle" style={{ margin: 0, fontSize: 12, fontStyle: 'italic' }}>{f.impact}</p>}
             {f.files.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {f.files.slice(0, 5).map((file) => (
-                  <span key={file} className="font-mono text-xs px-1.5 py-0.5 bg-slate-700 rounded text-slate-300">{file}</span>
-                ))}
+              <div className="row" style={{ gap: 6 }}>
+                {f.files.slice(0, 6).map((file) => <span key={file} className="chip">{file}</span>)}
+                {f.files.length > 6 && <span className="chip">+{f.files.length - 6} more</span>}
               </div>
             )}
           </div>
-        ))
-      )}
+        </article>
+      ))}
     </div>
   );
 }
 
 function RootCauseTab({ inv }: { inv: Investigation }) {
   const rc = inv.rootCause;
-  if (!rc) return <p className="text-slate-500 text-sm">Root cause analysis not yet completed.</p>;
+  if (!rc) return <Pending what="Root cause" hint="Correlation runs after the analysis agents finish." />;
 
   return (
-    <div className="space-y-4">
-      <Card title="Root Cause">
-        <div className="space-y-3">
-          <p className="text-white font-medium">{rc.statement}</p>
-          <p className="text-sm text-slate-400">{rc.detail}</p>
-          <div className="flex items-center gap-3 text-xs">
-            <span className="text-slate-500">Confidence</span>
-            <div className="flex-1 bg-slate-700 rounded-full h-2">
-              <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${rc.confidence * 100}%` }} />
+    <div className="stack">
+      <Card title="Root cause">
+        <div className="stack">
+          <p style={{ margin: 0, fontSize: 15, fontWeight: 600, lineHeight: 1.5 }}>{rc.statement}</p>
+          <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{rc.detail}</p>
+          <div className="row" style={{ gap: 12 }}>
+            <div className="meter" style={{ flex: 1 }} role="img" aria-label={`Confidence ${(rc.confidence * 100).toFixed(0)} percent`}>
+              <div className="meter-fill" style={{ width: `${rc.confidence * 100}%` }} />
             </div>
-            <span className="text-white font-mono">{(rc.confidence * 100).toFixed(0)}%</span>
+            <span className="mono" style={{ fontSize: 13, fontWeight: 700 }}>{(rc.confidence * 100).toFixed(0)}%</span>
           </div>
           {rc.margin < 0.2 && (
-            <p className="text-xs text-yellow-400">⚠ Low margin vs next hypothesis — manual review recommended.</p>
+            <div className="alert" style={{ borderColor: 'rgba(251,191,36,.34)', background: 'var(--warn-soft)', color: 'var(--warn)' }}>
+              <span>Low margin over the next hypothesis — treat this ranking as a shortlist, not a verdict.</span>
+            </div>
           )}
         </div>
       </Card>
 
       {rc.failurePath.length > 0 && (
-        <Card title="Failure Path">
-          <ol className="space-y-1">
-            {rc.failurePath.map((step, i) => (
-              <li key={i} className="flex items-center gap-2 text-xs text-slate-300">
-                <span className="text-slate-600">{i + 1}.</span>
-                <span>{step.step}</span>
-              </li>
-            ))}
+        <Card title="Failure path">
+          <ol className="list-num">
+            {rc.failurePath.map((step, i) => <li key={i}>{step.step}</li>)}
           </ol>
         </Card>
       )}
 
-      <Card title="Evidence Matrix">
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+      <Card title="Evidence matrix" flush>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
             <thead>
-              <tr className="text-slate-500 border-b border-slate-700">
-                <th className="text-left py-2 pr-4">Hypothesis</th>
-                <th className="text-left py-2 pr-4">Status</th>
-                <th className="text-right py-2 pr-4">Score</th>
-                <th className="text-left py-2">Corroborated by</th>
+              <tr>
+                <th>Hypothesis</th>
+                <th>Status</th>
+                <th>Score</th>
+                <th>Corroborated by</th>
               </tr>
             </thead>
             <tbody>
               {rc.hypotheses.map((h) => (
-                <tr key={h.id} className="border-b border-slate-700/50">
-                  <td className="py-2 pr-4 text-slate-300 max-w-xs">
-                    {h.statement.length > 80 ? `${h.statement.slice(0, 80).trimEnd()}…` : h.statement}
+                <tr key={h.id}>
+                  <td style={{ maxWidth: 380 }}>
+                    {h.statement.length > 90 ? `${h.statement.slice(0, 90).trimEnd()}…` : h.statement}
                   </td>
-                  <td className="py-2 pr-4">
-                    <Badge variant={h.status === 'supported' ? 'success' : h.status === 'possible' ? 'info' : 'muted'}>{h.status}</Badge>
-                  </td>
-                  <td className="py-2 pr-4 text-right font-mono text-slate-400">{(h.score * 100).toFixed(0)}%</td>
-                  <td className="py-2 text-slate-500">{h.corroboratedBy.join(', ')}</td>
+                  <td><Badge variant={h.status === 'supported' ? 'success' : h.status === 'possible' ? 'info' : 'muted'} dot>{h.status}</Badge></td>
+                  <td className="mono" style={{ textAlign: 'right' }}>{(h.score * 100).toFixed(0)}%</td>
+                  <td className="mono" style={{ fontSize: 11 }}>{h.corroboratedBy.join(', ') || '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -323,73 +401,81 @@ function RootCauseTab({ inv }: { inv: Investigation }) {
 }
 
 function ChangePlanTab({
-  inv, onApprove, approving, approvalNote, setApprovalNote,
+  inv, onApprove, approving,
 }: {
   inv: Investigation;
-  onApprove: () => void;
+  onApprove: (note: string) => void;
   approving: boolean;
-  approvalNote: string;
-  setApprovalNote: (v: string) => void;
 }) {
   const plan = inv.changePlan;
-  if (!plan) return <p className="text-slate-500 text-sm">Change plan not yet generated.</p>;
+  const [note, setNote] = useState('');
+
+  if (!plan) return <Pending what="Change plan" hint="A plan is generated once a root cause is confirmed." />;
 
   return (
-    <div className="space-y-4">
-      <Card title="Plan Summary">
-        <p className="text-sm text-slate-300">{plan.summary}</p>
-        <p className="text-xs text-slate-500 mt-2 font-mono">Plan hash: {plan.planHash}</p>
+    <div className="stack">
+      <Card title="Plan summary">
+        <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{plan.summary}</p>
+        <div className="spread" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <span className="subtle" style={{ fontSize: 12 }}>Plan hash (approval is bound to this value)</span>
+          <span className="chip mono">{plan.planHash}</span>
+        </div>
       </Card>
 
       {plan.changes.map((c) => (
-        <div key={c.id} className="bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Change #{c.number}</h3>
-            <span className="font-mono text-xs text-blue-400">{c.file}</span>
+        <article key={c.id} className="panel">
+          <div className="panel-head">
+            <h3 className="panel-title">Change #{c.number}</h3>
+            <span className="chip mono">{c.file}</span>
           </div>
-          <div className="grid gap-2 text-xs">
-            <div><span className="text-slate-500">Current behavior: </span><span className="text-slate-300">{c.currentBehavior}</span></div>
-            <div><span className="text-slate-500">Required change: </span><span className="text-slate-300">{c.requiredChange}</span></div>
-            <div><span className="text-slate-500">Reason: </span><span className="text-slate-300">{c.reason}</span></div>
-            <div><span className="text-yellow-500">Regression risk: </span><span className="text-slate-300">{c.regressionRisk}</span></div>
-            <div><span className="text-green-500">Verification: </span><span className="text-slate-300">{c.verification}</span></div>
+          <div className="panel-body stack">
+            <dl className="kv">
+              <dt>Current</dt><dd>{c.currentBehavior}</dd>
+              <dt>Required</dt><dd>{c.requiredChange}</dd>
+              <dt>Reason</dt><dd>{c.reason}</dd>
+              <dt style={{ color: 'var(--warn)' }}>Regression risk</dt><dd>{c.regressionRisk}</dd>
+              <dt style={{ color: 'var(--accent)' }}>Verification</dt><dd>{c.verification}</dd>
+            </dl>
+            {c.diffPreview && <pre className="code">{c.diffPreview}</pre>}
           </div>
-          {c.diffPreview && (
-            <pre className="bg-slate-900 rounded-lg p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap text-slate-300">{c.diffPreview}</pre>
-          )}
-        </div>
+        </article>
       ))}
 
       {plan.consideredAndRejected.length > 0 && (
-        <Card title="Considered & Rejected">
-          {plan.consideredAndRejected.map((r, i) => (
-            <div key={i} className="text-xs text-slate-400 py-1">
-              <span className="text-slate-300">{r.statement}</span> — {r.why}
-            </div>
-          ))}
+        <Card title="Considered and rejected">
+          <ul className="list-plain">
+            {plan.consideredAndRejected.map((r, i) => (
+              <li key={i} style={{ fontSize: 13 }}>
+                <span style={{ color: 'var(--ink)' }}>{r.statement}</span>
+                <span className="muted"> — {r.why}</span>
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
 
       {inv.status === 'awaiting_approval' && (
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-5 space-y-3">
-          <h3 className="text-sm font-semibold text-yellow-300">⏸ Human Approval Required</h3>
-          <p className="text-xs text-slate-400">
-            Review the changes above. Once you approve, the Implementation Agent will apply only these exact changes.
-          </p>
-          <textarea
-            value={approvalNote}
-            onChange={(e) => setApprovalNote(e.target.value)}
-            placeholder="Optional approval note…"
-            rows={2}
-            className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-yellow-500 resize-none"
-          />
-          <button
-            onClick={onApprove}
-            disabled={approving}
-            className="w-full py-3 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-xl transition-colors disabled:opacity-50 text-sm"
-          >
-            {approving ? 'Approving…' : '✓ Approve Fix Plan'}
-          </button>
+        <div className="panel" style={{ borderColor: 'rgba(251,191,36,.34)' }}>
+          <div className="panel-body stack">
+            <p className="banner-title" style={{ color: 'var(--warn)' }}>⏸ Approve to continue</p>
+            <p className="banner-text" style={{ margin: 0 }}>
+              Approving authorises the implementation agent to apply only the changes above. If the
+              plan changes after this point, approval is rejected on the hash check.
+            </p>
+            <label className="field">
+              <span className="field-label">Approval note (optional)</span>
+              <textarea
+                className="textarea"
+                rows={2}
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Why you are approving this plan…"
+              />
+            </label>
+            <button className="btn btn-warn btn-lg" onClick={() => onApprove(note)} disabled={approving}>
+              {approving ? 'Approving…' : '✓ Approve fix plan'}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -398,91 +484,105 @@ function ChangePlanTab({
 
 function ImplementationTab({ inv }: { inv: Investigation }) {
   const impl = inv.implementation;
-  if (!impl) return <p className="text-slate-500 text-sm">Implementation not yet run.</p>;
+  if (!impl) return <Pending what="Implementation" hint="The implementation agent runs after the plan is approved." />;
 
   return (
-    <div className="space-y-4">
-      <Card title={`Implementation — ${impl.status.toUpperCase()}`}>
-        <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-          <div><span className="text-slate-500">Status: </span>
-            <Badge variant={impl.status === 'completed' ? 'success' : impl.status === 'partial' ? 'warn' : 'danger'}>{impl.status}</Badge>
+    <div className="stack">
+      <Card title="Implementation">
+        <div className="stack">
+          <div className="row" style={{ gap: 8 }}>
+            {statusBadge(impl.status)}
+            <span className="chip mono">{duration(impl.durationMs)}</span>
+            <span className="chip mono">{impl.diffStat}</span>
           </div>
-          <div><span className="text-slate-500">Duration: </span><span className="text-white">{impl.durationMs}ms</span></div>
-          <div className="col-span-2"><span className="text-slate-500">Diff stat: </span><span className="text-white">{impl.diffStat}</span></div>
-        </div>
-        <div className="space-y-1">
-          {impl.notes.map((n, i) => (
-            <p key={i} className="text-xs text-slate-400 font-mono">{n}</p>
-          ))}
-        </div>
-      </Card>
-      {impl.appliedChanges.map((c) => (
-        <div key={c.plannedChangeId} className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-xs text-blue-400">{c.file}</span>
-            <Badge variant={c.status === 'applied' ? 'success' : c.status === 'skipped' ? 'muted' : 'danger'}>{c.status}</Badge>
-          </div>
-          {c.note && <p className="text-xs text-slate-400">{c.note}</p>}
-          {c.diff && (
-            <pre className="bg-slate-900 rounded-lg p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap text-slate-300">{c.diff}</pre>
+          {impl.notes.length > 0 && (
+            <ul className="list-plain">
+              {impl.notes.map((n, i) => <li key={i} className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>{n}</li>)}
+            </ul>
           )}
         </div>
-      ))}
+      </Card>
+
+      {impl.appliedChanges.length === 0 ? (
+        <div className="alert">
+          <span>No change was written to the workspace. The applied count is the honest result here — the run did not modify files.</span>
+        </div>
+      ) : (
+        impl.appliedChanges.map((c) => (
+          <article key={c.plannedChangeId} className="panel">
+            <div className="panel-head">
+              <span className="chip mono">{c.file}</span>
+              {statusBadge(c.status)}
+            </div>
+            <div className="panel-body stack-sm">
+              {c.note && <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>{c.note}</p>}
+              {c.diff && <pre className="code">{c.diff}</pre>}
+            </div>
+          </article>
+        ))
+      )}
     </div>
   );
 }
 
 function VerificationTab({ inv }: { inv: Investigation }) {
   const ver = inv.verification;
-  if (!ver) return <p className="text-slate-500 text-sm">Verification not yet run.</p>;
+  if (!ver) return <Pending what="Verification" hint="Verification runs once the implementation stage finishes." />;
 
   return (
-    <div className="space-y-4">
-      <Card title={`Verification — ${ver.status.toUpperCase()}`}>
-        <p className="text-sm text-slate-300">{ver.summary}</p>
+    <div className="stack">
+      <Card title="Verification">
+        <div className="stack-sm">
+          <div className="row" style={{ gap: 8 }}>{statusBadge(ver.status)}</div>
+          <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{ver.summary}</p>
+        </div>
       </Card>
 
       {ver.before && (
-        <div className="grid sm:grid-cols-2 gap-4">
-          <Card title="BEFORE">
-            <div className="space-y-1 text-xs">
-              <div><span className="text-slate-500">Expected: </span><span className="text-slate-300">{ver.before.bugReproduction.expected}</span></div>
-              <div><span className="text-slate-500">Observed: </span><span className="text-slate-300">{ver.before.bugReproduction.observed}</span></div>
-              <div className="pt-1">
-                <Badge variant="danger">FAIL</Badge>
-              </div>
-            </div>
+        <div className="card-grid-2">
+          <Card title="Before">
+            <dl className="kv">
+              <dt>Expected</dt><dd>{ver.before.bugReproduction.expected}</dd>
+              <dt>Observed</dt><dd>{ver.before.bugReproduction.observed}</dd>
+            </dl>
+            <div style={{ marginTop: 10 }}><Badge variant="danger" dot>fail</Badge></div>
           </Card>
-          <Card title="AFTER">
-            <div className="space-y-1 text-xs">
-              <div><span className="text-slate-500">Expected: </span><span className="text-slate-300">{ver.before.postFix.expected}</span></div>
-              <div><span className="text-slate-500">Observed: </span><span className="text-slate-300">{ver.before.postFix.observed}</span></div>
-              <div className="pt-1">
-                <Badge variant={ver.before.postFix.status === 'pass' ? 'success' : 'danger'}>{ver.before.postFix.status.toUpperCase()}</Badge>
-              </div>
+          <Card title="After">
+            <dl className="kv">
+              <dt>Expected</dt><dd>{ver.before.postFix.expected}</dd>
+              <dt>Observed</dt><dd>{ver.before.postFix.observed}</dd>
+            </dl>
+            <div style={{ marginTop: 10 }}>
+              <Badge variant={ver.before.postFix.status === 'pass' ? 'success' : 'danger'} dot>
+                {ver.before.postFix.status}
+              </Badge>
             </div>
           </Card>
         </div>
       )}
 
-      <div className="space-y-2">
+      <div className="stack">
         {ver.checks.map((c) => (
-          <div key={c.id} className="bg-slate-800/60 border border-slate-700 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-white">{c.name}</span>
-              <Badge variant={c.status === 'pass' ? 'success' : c.status === 'fail' ? 'danger' : c.status === 'not_available' ? 'muted' : 'warn'}>{c.status}</Badge>
+          <article key={c.id} className="panel">
+            <div className="panel-head">
+              <h3 className="page-title-sm" style={{ fontSize: 14 }}>{c.name}</h3>
+              <Badge variant={c.status === 'pass' ? 'success' : c.status === 'fail' ? 'danger' : c.status === 'not_available' ? 'muted' : 'warn'} dot>
+                {c.status.replace(/_/g, ' ')}
+              </Badge>
             </div>
-            <p className="text-xs text-slate-400">{c.summary}</p>
-            {c.command && <p className="text-xs font-mono text-slate-500 mt-1">{c.command}</p>}
-            {c.failedTests.length > 0 && (
-              <div className="mt-2">
-                <p className="text-xs text-slate-500">Failed tests:</p>
-                {c.failedTests.slice(0, 5).map((t, i) => (
-                  <p key={i} className="text-xs text-red-400 font-mono">  {t}</p>
-                ))}
-              </div>
-            )}
-          </div>
+            <div className="panel-body stack-sm">
+              <p className="muted" style={{ margin: 0, fontSize: 13 }}>{c.summary}</p>
+              {c.command && <pre className="code">{c.command}</pre>}
+              {c.failedTests.length > 0 && (
+                <div className="stack-sm">
+                  <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                    Failed tests
+                  </span>
+                  {c.failedTests.slice(0, 8).map((t, i) => <pre key={i} className="code" style={{ color: 'var(--danger)' }}>{t}</pre>)}
+                </div>
+              )}
+            </div>
+          </article>
         ))}
       </div>
     </div>
@@ -491,49 +591,62 @@ function VerificationTab({ inv }: { inv: Investigation }) {
 
 function RegressionTab({ inv }: { inv: Investigation }) {
   const reg = inv.regression;
-  if (!reg) return <p className="text-slate-500 text-sm">Regression analysis not yet run.</p>;
+  if (!reg) return <Pending what="Regression" hint="Regression analysis runs after verification." />;
 
   return (
-    <div className="space-y-4">
-      <Card title={`Regression — ${reg.status.toUpperCase()}`}>
-        <p className="text-sm text-slate-300">{reg.summary}</p>
+    <div className="stack">
+      <Card title="Regression">
+        <div className="stack-sm">
+          <div className="row" style={{ gap: 8 }}>{statusBadge(reg.status)}</div>
+          <p className="muted" style={{ margin: 0, fontSize: 13, lineHeight: 1.65 }}>{reg.summary}</p>
+        </div>
       </Card>
 
       {reg.impacts.length > 0 && (
-        <Card title="Impact Analysis">
-          <div className="space-y-2">
+        <Card title="Impact analysis">
+          <ul className="list-plain">
             {reg.impacts.slice(0, 10).map((impact, i) => (
-              <div key={i} className="flex items-start gap-3 text-xs">
-                <Badge variant={impact.severity === 'high' ? 'danger' : impact.severity === 'medium' ? 'warn' : 'info'}>{impact.severity}</Badge>
-                <div>
-                  <span className="font-mono text-slate-300">{impact.file}</span>
-                  <span className="text-slate-500 ml-2">[{impact.kind}]</span>
-                  <p className="text-slate-400">{impact.detail}</p>
+              <li key={i} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
+                <Badge variant={impact.severity === 'high' ? 'danger' : impact.severity === 'medium' ? 'warn' : 'info'} dot>
+                  {impact.severity}
+                </Badge>
+                <div style={{ minWidth: 0 }}>
+                  <div className="row" style={{ gap: 8 }}>
+                    <span className="chip mono">{impact.file}</span>
+                    <span className="subtle" style={{ fontSize: 11 }}>{impact.kind}</span>
+                  </div>
+                  <p className="muted" style={{ margin: '4px 0 0', fontSize: 12.5, lineHeight: 1.55 }}>{impact.detail}</p>
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </Card>
       )}
 
       {reg.originalBugRetested && (
-        <Card title="Original Bug Re-test">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-300">{reg.originalBugRetested.name}</span>
-            <Badge variant={reg.originalBugRetested.status === 'pass' ? 'success' : 'danger'}>{reg.originalBugRetested.status}</Badge>
+        <Card title="Original bug re-test">
+          <div className="stack-sm">
+            <div className="spread">
+              <span style={{ fontSize: 13 }}>{reg.originalBugRetested.name}</span>
+              <Badge variant={reg.originalBugRetested.status === 'pass' ? 'success' : 'danger'} dot>
+                {reg.originalBugRetested.status}
+              </Badge>
+            </div>
+            <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>{reg.originalBugRetested.summary}</p>
           </div>
-          <p className="text-xs text-slate-400 mt-1">{reg.originalBugRetested.summary}</p>
         </Card>
       )}
 
       {reg.createdTests.length > 0 && (
-        <Card title="Generated Regression Tests">
-          {reg.createdTests.map((t, i) => (
-            <div key={i} className="text-xs py-1">
-              <span className="font-mono text-blue-400">{t.file}</span>
-              <p className="text-slate-400">{t.description}</p>
-            </div>
-          ))}
+        <Card title="Generated regression tests">
+          <ul className="list-plain">
+            {reg.createdTests.map((t, i) => (
+              <li key={i}>
+                <span className="chip mono">{t.file}</span>
+                <p className="muted" style={{ margin: '5px 0 0', fontSize: 12.5 }}>{t.description}</p>
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
     </div>
@@ -543,95 +656,101 @@ function RegressionTab({ inv }: { inv: Investigation }) {
 function ReportTab({ inv }: { inv: Investigation }) {
   const report = inv.report;
   const metrics = inv.metrics;
-
-  if (!report) return <p className="text-slate-500 text-sm">Report not yet generated.</p>;
+  if (!report) return <Pending what="Report" hint="The engineering report is written once the workflow completes." />;
 
   return (
-    <div className="space-y-4">
+    <div className="stack">
       {metrics && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="metric-grid">
           {[
-            { label: 'Total Duration', value: `${(metrics.totalWorkflowDurationMs / 1000).toFixed(1)}s` },
-            { label: 'Files Inspected', value: String(metrics.filesInspected) },
-            { label: 'Hypotheses', value: `${metrics.hypothesesGenerated} (${metrics.hypothesesRejected} rejected)` },
-            { label: 'Tests Executed', value: `${metrics.testsExecuted} (${metrics.testsPassed} passed)` },
-            { label: 'Agents Used', value: `${metrics.agentsUsed}${metrics.agentsFailed ? ` (${metrics.agentsFailed} failed)` : ''}` },
-            { label: 'Manual Steps', value: String(metrics.manualSteps) },
-            { label: 'Steps Automated', value: `${metrics.manualStepsAutomatedPct}%` },
-            { label: 'Files Modified', value: String(metrics.filesModified) },
+            { label: 'Total duration', value: duration(metrics.totalWorkflowDurationMs) },
+            { label: 'Files inspected', value: String(metrics.filesInspected) },
+            { label: 'Hypotheses', value: `${metrics.hypothesesGenerated}` },
+            { label: 'Hypotheses rejected', value: `${metrics.hypothesesRejected}` },
+            { label: 'Tests executed', value: `${metrics.testsExecuted}` },
+            { label: 'Tests passed', value: `${metrics.testsPassed}` },
+            { label: 'Agents used', value: `${metrics.agentsUsed}${metrics.agentsFailed ? ` (${metrics.agentsFailed} failed)` : ''}` },
+            { label: 'Steps automated', value: `${metrics.manualStepsAutomatedPct}%` },
           ].map((m) => (
-            <div key={m.label} className="bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-center">
-              <p className="text-xl font-bold text-white">{m.value}</p>
-              <p className="text-xs text-slate-500 mt-1">{m.label}</p>
+            <div key={m.label} className="metric">
+              <p className="metric-value">{m.value}</p>
+              <p className="metric-label">{m.label}</p>
             </div>
           ))}
         </div>
       )}
 
       {metrics?.comparison && (
-        <Card title="Workflow Comparison">
-          <div className="grid sm:grid-cols-3 gap-4 text-sm">
+        <Card title="Workflow comparison">
+          <div className="card-grid-3" style={{ alignItems: 'center' }}>
             <div>
-              <p className="text-xs text-slate-500 mb-1">Manual Workflow <span className="italic">(estimated baseline)</span></p>
-              <p className="text-lg font-bold text-slate-300">{metrics.comparison.baseline.totalMinutes} min</p>
-              <p className="text-xs text-slate-500">{metrics.comparison.baseline.manualSteps} manual steps</p>
+              <p className="metric-label" style={{ marginBottom: 6 }}>Manual baseline (estimated)</p>
+              <p className="metric-value">{metrics.comparison.baseline.totalMinutes} min</p>
+              <p className="subtle" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                {metrics.comparison.baseline.manualSteps} manual steps
+              </p>
             </div>
-            <div className="flex items-center justify-center text-2xl text-blue-400">→</div>
+            <div style={{ textAlign: 'center', color: 'var(--accent)', fontSize: 22 }} aria-hidden="true">→</div>
             <div>
-              <p className="text-xs text-slate-500 mb-1">FixFlow AI <span className="italic">(measured)</span></p>
-              <p className="text-lg font-bold text-emerald-400">{duration(metrics.comparison.fixflow.totalMinutes * 60_000)}</p>
-              <p className="text-xs text-slate-500">
+              <p className="metric-label" style={{ marginBottom: 6 }}>FixFlow (measured)</p>
+              <p className="metric-value" style={{ color: 'var(--accent)' }}>
+                {duration(metrics.comparison.fixflow.totalMinutes * 60_000)}
+              </p>
+              <p className="subtle" style={{ margin: '4px 0 0', fontSize: 12 }}>
                 {metrics.comparison.fixflow.manualSteps} manual{' '}
                 {metrics.comparison.fixflow.manualSteps === 1 ? 'step' : 'steps'}
               </p>
             </div>
           </div>
-          <div className="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-400">
-            <span className="text-emerald-400">
-              Saved {duration(metrics.comparison.deltas.timeSavedMinutes * 60_000)}
-            </span>{' '}
-            against the estimated manual baseline ·{' '}
-            {metrics.comparison.deltas.manualStepsReduced} steps automated
-          </div>
+          <p className="subtle" style={{ margin: '14px 0 0', paddingTop: 12, borderTop: '1px solid var(--line)', fontSize: 12 }}>
+            Saved {duration(metrics.comparison.deltas.timeSavedMinutes * 60_000)} against the
+            estimated baseline · {metrics.comparison.deltas.manualStepsReduced} steps automated.
+            The baseline is an estimate, not a measurement.
+          </p>
           {metrics.comparison.notes.length > 0 && (
-            <ul className="mt-2 text-xs text-slate-500 list-disc list-inside space-y-0.5">
-              {metrics.comparison.notes.map((n, i) => <li key={i}>{n}</li>)}
+            <ul className="list-plain" style={{ marginTop: 10 }}>
+              {metrics.comparison.notes.map((n, i) => (
+                <li key={i} className="subtle" style={{ fontSize: 12 }}>{n}</li>
+              ))}
             </ul>
           )}
         </Card>
       )}
 
       <Card
-        title="Engineering Report"
+        title="Engineering report"
         action={
           <button
+            className="btn btn-sm"
             onClick={() => {
               const blob = new Blob([report.markdown], { type: 'text/markdown' });
               const a = document.createElement('a');
               a.href = URL.createObjectURL(blob);
               a.download = `fixflow-report-${inv.id.slice(0, 8)}.md`;
               a.click();
+              URL.revokeObjectURL(a.href);
             }}
-            className="text-xs text-blue-400 hover:text-blue-300"
           >
             ↓ Download .md
           </button>
         }
       >
-        <div className="space-y-4 text-xs text-slate-300">
+        <div className="stack">
           {[
-            { label: 'PR Summary', content: report.prSummary.summary },
-            { label: 'Root Cause', content: report.rootCause },
-            { label: 'Files Changed', content: report.filesChanged },
-            { label: 'Tests Executed', content: report.testsExecuted },
-            { label: 'Before/After', content: report.beforeAfterBehavior },
+            { label: 'PR summary', content: report.prSummary.summary },
+            { label: 'Root cause', content: report.rootCause },
+            { label: 'Files changed', content: report.filesChanged },
+            { label: 'Tests executed', content: report.testsExecuted },
+            { label: 'Before / after', content: report.beforeAfterBehavior },
             { label: 'Regression', content: report.regressionResults },
-            { label: 'Remaining Risks', content: report.remainingRisks },
-            { label: 'Recommended Follow-up', content: report.recommendedFollowUp },
+            { label: 'Remaining risks', content: report.remainingRisks },
+            { label: 'Recommended follow-up', content: report.recommendedFollowUp },
           ].map(({ label, content }) => (
-            <div key={label}>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
-              <pre className="whitespace-pre-wrap leading-relaxed text-slate-300 font-sans">{content}</pre>
+            <div key={label} style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+              <p className="panel-title" style={{ margin: '0 0 6px' }}>{label}</p>
+              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.7, color: 'var(--muted)', whiteSpace: 'pre-wrap' }}>
+                {content}
+              </p>
             </div>
           ))}
         </div>

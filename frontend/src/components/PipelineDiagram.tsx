@@ -1,22 +1,11 @@
 import React from 'react';
-import type { AgentRun, StageId, StageTiming } from '../types/index.js';
-
-const STAGE_LABELS: Record<string, string> = {
-  projectAnalysis: 'Project Analysis',
-  investigation: 'Investigation',
-  rootCause: 'Root Cause',
-  changePlan: 'Change Plan',
-  approval: 'Approval (human)',
-  implementation: 'Implementation',
-  verification: 'Verification',
-  regression: 'Regression',
-  report: 'Report',
-};
+import type { AgentRun, StageTiming } from '../types/index.js';
+import { STAGE_LABEL, STAGE_ORDER, stageTone } from './StageStepper.js';
 
 const AGENT_LABELS: Record<string, string> = {
   evidence: 'Evidence',
   code: 'Code',
-  api: 'API/Service',
+  api: 'API / Service',
   database: 'Database',
   test: 'Tests',
   history: 'Git History',
@@ -27,74 +16,85 @@ interface Props {
   agents: AgentRun[];
 }
 
-function statusIcon(status: string): string {
-  if (status === 'completed' || status === 'passed' || status === 'clean') return '✓';
-  if (status === 'running' || status === 'investigating') return '◎';
-  if (status === 'failed') return '✗';
-  if (status === 'waiting_approval' || status === 'awaiting_approval') return '⏸';
-  return '○';
-}
+const DOT: Record<string, string> = {
+  done: 'var(--accent)',
+  active: 'var(--info)',
+  fail: 'var(--danger)',
+  wait: 'var(--warn)',
+  idle: 'var(--line)',
+};
 
-function statusColor(status: string): string {
-  if (status === 'completed' || status === 'clean' || status === 'passed') return 'text-emerald-400';
-  if (status === 'running' || status === 'investigating') return 'text-blue-400 animate-pulse';
-  if (status === 'failed') return 'text-red-400';
-  // Both spellings occur: the stage record uses waiting_approval, the
-  // investigation status uses awaiting_approval.
-  if (status === 'waiting_approval' || status === 'awaiting_approval') return 'text-yellow-400';
-  return 'text-slate-500';
-}
-
+/** Agent-level detail; the StageStepper covers the top-level progression. */
 export function PipelineDiagram({ stages, agents }: Props) {
-  const stageOrder: StageId[] = [
-    'projectAnalysis', 'investigation', 'rootCause', 'changePlan', 'approval',
-    'implementation', 'verification', 'regression', 'report',
-  ];
-
   const investigationAgents = agents.filter((a) =>
     ['evidence', 'code', 'api', 'database', 'test', 'history'].includes(a.agent));
 
   return (
-    <div className="space-y-1">
-      {stageOrder.map((stageId, i) => {
+    <div className="stack-sm">
+      {STAGE_ORDER.map((stageId) => {
         const s = stages[stageId];
-        const status = s?.status ?? 'pending';
+        const tone = stageTone(s?.status, false);
         const isInvestigation = stageId === 'investigation';
 
         return (
           <React.Fragment key={stageId}>
-            {i > 0 && (
-              <div className="ml-3 w-px h-3 border-l-2 border-dashed border-slate-700" />
-            )}
-            <div className={`flex items-center gap-3 px-3 py-2 rounded-md ${status === 'running' ? 'bg-blue-500/10' : status === 'completed' ? 'bg-emerald-500/5' : ''}`}>
-              <span className={`text-sm font-mono w-4 text-center ${statusColor(status)}`}>
-                {statusIcon(status)}
+            <div className="row" style={{ gap: 10, paddingTop: 4 }}>
+              <span
+                aria-hidden="true"
+                style={{ width: 8, height: 8, borderRadius: 999, background: DOT[tone], flex: 'none' }}
+              />
+              <span style={{ fontSize: 12.5, color: tone === 'idle' ? 'var(--subtle)' : 'var(--ink)' }}>
+                {STAGE_LABEL[stageId]}
               </span>
-              <span className={`text-sm flex-1 ${status === 'pending' ? 'text-slate-500' : 'text-slate-200'}`}>
-                {STAGE_LABELS[stageId] ?? stageId}
-              </span>
-              {s?.durationMs > 0 && (
-                <span className="text-xs text-slate-500 font-mono">{s.durationMs}ms</span>
+              {s?.durationMs ? (
+                <span className="mono" style={{ fontSize: 10.5, color: 'var(--subtle)' }}>
+                  {(s.durationMs / 1000).toFixed(1)}s
+                </span>
+              ) : null}
+              {s?.status && s.status !== 'pending' && (
+                <span
+                  className="mono"
+                  style={{
+                    marginLeft: 'auto',
+                    fontSize: 10,
+                    color: DOT[tone],
+                    textTransform: 'uppercase',
+                    letterSpacing: '.06em',
+                  }}
+                >
+                  {s.status.replace(/_/g, ' ')}
+                </span>
               )}
             </div>
 
             {isInvestigation && investigationAgents.length > 0 && (
-              <div className="ml-6 pl-3 border-l-2 border-slate-700 space-y-1 py-1">
+              <div style={{ marginLeft: 14, paddingLeft: 12, borderLeft: '1px solid var(--line)' }} className="stack-sm">
                 {investigationAgents.map((a) => (
-                  <div key={a.agent} className="flex items-center gap-2 py-0.5">
-                    <span className={`text-xs font-mono w-3 text-center ${statusColor(a.status)}`}>
-                      {statusIcon(a.status)}
-                    </span>
-                    <span className={`text-xs ${a.status === 'pending' ? 'text-slate-500' : 'text-slate-300'}`}>
+                  <div key={a.agent} className="row" style={{ gap: 9, padding: '1px 0' }}>
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 6, height: 6, borderRadius: 999, flex: 'none',
+                        background: a.status === 'completed' ? 'var(--accent)' : a.status === 'failed' ? 'var(--danger)' : a.status === 'running' ? 'var(--info)' : 'var(--line)',
+                      }}
+                    />
+                    <span style={{ fontSize: 12, color: a.status === 'pending' ? 'var(--subtle)' : 'var(--muted)' }}>
                       {AGENT_LABELS[a.agent] ?? a.agent}
                     </span>
                     {a.status === 'completed' && (
-                      <span className="text-xs text-slate-500">
-                        {a.findingCount} finding(s)
+                      <span className="mono" style={{ fontSize: 10.5, color: 'var(--subtle)' }}>
+                        {a.findingCount} finding{a.findingCount === 1 ? '' : 's'}
                       </span>
                     )}
+                    {a.durationMs ? (
+                      <span className="mono" style={{ fontSize: 10.5, color: 'var(--subtle)' }}>
+                        {(a.durationMs / 1000).toFixed(1)}s
+                      </span>
+                    ) : null}
                     {a.status === 'failed' && a.error && (
-                      <span className="text-xs text-red-400 truncate max-w-32">{a.error.message}</span>
+                      <span className="truncate-2" style={{ fontSize: 11, color: 'var(--danger)', maxWidth: 220 }}>
+                        {a.error.message}
+                      </span>
                     )}
                   </div>
                 ))}
