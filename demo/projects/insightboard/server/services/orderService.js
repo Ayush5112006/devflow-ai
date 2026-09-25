@@ -1,4 +1,4 @@
-import { getDb } from '../db/index.js';
+﻿import { getDb } from '../db/index.js';
 
 function toOrderView(row) {
   return {
@@ -45,3 +45,5 @@ export function revenueTotals() {
     )
     .all();
 }
+
+

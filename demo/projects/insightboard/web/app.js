@@ -1,4 +1,4 @@
-import { getJson, predictionsUrl, predictionUrl } from './api.js';
+﻿import { getJson, predictionsUrl, predictionUrl } from './api.js';
 import { formatClass, formatPercent, formatDate } from './lib/format.js';
 
 const listEl = document.querySelector('#prediction-list');
@@ -51,3 +51,5 @@ if (typeof window !== 'undefined') {
 }
 
 export { getJson };
+
+

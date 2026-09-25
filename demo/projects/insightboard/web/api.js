@@ -1,4 +1,4 @@
-// Base URL for the InsightBoard API, injected at build time by Vite.
+﻿// Base URL for the InsightBoard API, injected at build time by Vite.
 const API_BASE = import.meta.env.VITE_API_BASE;
 
 export async function getJson(path) {
@@ -13,3 +13,5 @@ export function predictionsUrl() {
 export function predictionUrl(id) {
   return `${API_BASE}/api/predictions/${id}`;
 }
+
+

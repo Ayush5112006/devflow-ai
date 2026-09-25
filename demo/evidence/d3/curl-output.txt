@@ -1,0 +1,17 @@
+$ curl -i http://localhost:3000/api/orders
+HTTP/1.1 500 Internal Server Error
+content-type: application/json; charset=utf-8
+
+{"error":"internal_error","message":"no such column: o.customer_name"}
+
+$ curl -i http://localhost:3000/api/orders/1
+HTTP/1.1 500 Internal Server Error
+content-type: application/json; charset=utf-8
+
+{"error":"internal_error","message":"no such column: o.customer_name"}
+
+$ curl -i http://localhost:3000/api/revenue
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+
+{"totals":[{"status":"paid","total":40700},{"status":"pending","total":45200},{"status":"refunded","total":9900}]}

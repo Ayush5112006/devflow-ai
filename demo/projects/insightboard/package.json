@@ -7,7 +7,7 @@
   "engines": { "node": ">=22.5.0" },
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test test/",
+    "test": "node --test --test-reporter=tap \"test/*.test.js\"",
     "repro:d1": "node scripts/repro-d1.js",
     "repro:d2": "node scripts/repro-d2.js",
     "repro:d3": "node scripts/repro-d3.js"
