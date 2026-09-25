@@ -238,6 +238,8 @@ export type HypothesisStatus = 'supported' | 'possible' | 'rejected';
 export interface Hypothesis {
   id: string;
   statement: string;
+  /** Normalised identifier this hypothesis is about (column, field, env var). */
+  subject: string;
   category: string;
   status: HypothesisStatus;
   /** 0..1 — how strongly the evidence supports this over the alternatives. */

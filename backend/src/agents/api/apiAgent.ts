@@ -132,9 +132,42 @@ function describeRoutes(ctx: AgentContext, index: CodeIndex) {
 interface FieldMismatch {
   call: ClientCall;
   route: RouteDef;
-  missing: { key: string; chain: string[]; line: number; file: string; snippet: string }[];
+  missing: { key: string; chain: string[]; line: number; file: string; snippet: string; depth: number; via: string | null }[];
   renameSuspects: { consumed: string; produced: string; score: number; chain: string[]; line: number; file: string; snippet: string }[];
   unusedProduced: string[];
+}
+
+/**
+ * Walks a consumer chain (`payload.prediction.prediction.label`) against what the
+ * producer actually sends, one hop at a time.
+ *
+ * The first hop is checked against the response payload's own keys. Deeper hops
+ * are checked against the known shape of the value behind that key, which comes
+ * from the query that produced it. A hop we know nothing about stops the walk
+ * rather than inventing a mismatch.
+ */
+function checkChain(
+  chain: string[],
+  produced: Set<string>,
+  shapes: Record<string, { keys: string[]; via: string; table: string | null }>,
+): { missingHop: string | null; depth: number; via: string | null; keysAtHop: string[] | null } {
+  const hops = chain.slice(1);
+  if (hops.length === 0) return { missingHop: null, depth: 0, via: null, keysAtHop: null };
+
+  const first = hops[0];
+  if (!produced.has(first)) return { missingHop: first, depth: 1, via: null, keysAtHop: null };
+
+  let current = first;
+  for (let i = 1; i < hops.length; i += 1) {
+    const shape = shapes[current];
+    if (!shape) return { missingHop: null, depth: 0, via: null, keysAtHop: null }; // unknown, stay silent
+    const next = hops[i];
+    if (!shape.keys.includes(next)) {
+      return { missingHop: next, depth: i + 1, via: shape.via, keysAtHop: shape.keys };
+    }
+    current = next;
+  }
+  return { missingHop: null, depth: 0, via: null, keysAtHop: null };
 }
 
 function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: Finding[]; signals: Signal[] } {
@@ -153,36 +186,42 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
     const missing: FieldMismatch['missing'] = [];
     const renameSuspects: FieldMismatch['renameSuspects'] = [];
     const consumedNames = new Set<string>();
+    const reported = new Set<string>();
 
     for (const access of call.accesses) {
       if (access.chain.length < 2) continue;
-      // The first hop is the variable holding the payload; start from hop 2.
       const pathFromRoot = access.chain.slice(1);
       if (pathFromRoot.length === 0) continue;
       consumedNames.add(pathFromRoot[0]);
 
-      const first = pathFromRoot[0];
-      const hasSpread = route.responseKeys.some((k) => k.name.startsWith('...'));
-      if (hasSpread) continue;
+      const verdict = checkChain(access.chain, produced, route.responseShapes ?? {});
+      if (!verdict.missingHop) continue;
 
-      if (!produced.has(first)) {
-        // Rank the produced keys by name similarity to what was consumed.
+      const key = verdict.missingHop;
+      const dedupeKey = `${key}|${pathFromRoot.slice(0, verdict.depth).join('.')}`;
+      if (reported.has(dedupeKey)) continue;
+      reported.add(dedupeKey);
+
+      missing.push({
+        key,
+        chain: access.chain,
+        line: access.line,
+        file: access.file,
+        snippet: access.snippet,
+        depth: verdict.depth,
+        via: verdict.via,
+      });
+
+      // Only a top-level miss can be a rename of a produced field.
+      if (verdict.depth === 1) {
         let best: { name: string; score: number } | null = null;
-        for (const key of produced) {
-          const sim = nameSimilarity(first, key);
-          if (!best || sim.score > best.score) best = { name: key, score: sim.score };
+        for (const name of produced) {
+          const sim = nameSimilarity(key, name);
+          if (!best || sim.score > best.score) best = { name, score: sim.score };
         }
-        const entry = {
-          key: first,
-          chain: access.chain,
-          line: access.line,
-          file: access.file,
-          snippet: access.snippet,
-        };
-        missing.push(entry);
         if (best && best.score >= 0.4) {
           renameSuspects.push({
-            consumed: first,
+            consumed: key,
             produced: best.name,
             score: best.score,
             chain: access.chain,
@@ -218,7 +257,9 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
         'api',
         m.file,
         m.line,
-        `Consumer reads ${q(m.chain.join('.'))} but ${route.method} ${route.path} never sends ${q(m.key)}`,
+        m.depth > 1
+          ? `Consumer reads ${q(m.chain.join('.'))}, one level deeper than ${m.via ?? 'the producer'} can supply`
+          : `Consumer reads ${q(m.chain.join('.'))} but ${route.method} ${route.path} never sends ${q(m.key)}`,
         m.snippet,
       ));
     }
@@ -237,10 +278,16 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
       if (runtimeHit) weight += 0.25;
       // Same function the stack frame points at is the strongest possible link.
       if (stackHit && m.line >= (stackHit.line - 20) && m.line <= (stackHit.line + 20)) weight += 0.1;
+      // A statically proven shape mismatch does not need runtime help.
+      if (m.depth > 1) weight = Math.max(weight, 0.7);
+
+      const statement = m.depth > 1
+        ? `Consumer reads ${q(m.chain.join('.'))}, but ${m.via ?? 'the producer'} returns { ${route.responseShapes[Object.keys(route.responseShapes)[0]]?.keys.join(', ') ?? ''} } — there is no ${q(m.key)} at that depth.`
+        : `Consumer ${q(m.chain.join('.'))} reads ${q(m.key)}, which ${route.method} ${route.path} never sends.`;
 
       mSignals.push(signal({
         kind: 'api-field-missing',
-        statement: `Consumer ${q(m.chain.join('.'))} reads ${q(m.key)}, which ${route.method} ${route.path} never sends.`,
+        statement,
         subject: m.key,
         source: 'api',
         weight: Math.min(0.98, weight),
@@ -248,6 +295,8 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
         detail: {
           consumedKey: m.key,
           chain: m.chain,
+          depth: m.depth,
+          shapeSource: m.via,
           consumerFile: m.file,
           consumerLine: m.line,
           consumerSnippet: m.snippet,
@@ -285,7 +334,7 @@ function findFieldMismatches(ctx: AgentContext, index: CodeIndex): { findings: F
     }
 
     const severity = mSignals.some((s) => s.weight >= 0.7) ? 'high' : 'medium';
-    const consumedList = missing.map((x) => q(x.key)).join(', ') || 'no matching field';
+    const consumedList = missing.map((x) => q(x.chain.join('.'))).join(', ') || 'no matching field';
     const producedList = [...new Set(route.responseKeys.map((k) => k.name))].join(', ');
     findings.push(finding({
       agent: 'api',

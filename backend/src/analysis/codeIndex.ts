@@ -63,12 +63,15 @@ export interface RouteDef {
   file: string;
   line: number;
   handler: string | null;
-  /** Top-level keys the handler actually sends. */
   responseKeys: ObjectKey[];
-  /** Where the response payload literal starts. */
   responseLiteralLine: number | null;
+  /**
+   * Known inner shape of a response key, e.g. `prediction` -> the columns the
+   * underlying query returns. Lets a consumer chain be checked hop by hop
+   * instead of only at the top level.
+   */
+  responseShapes: Record<string, { keys: string[]; via: string; table: string | null }>;
   envRefs: EnvRef[];
-  /** SQL statements executed inside the handler range. */
   sql: string[];
 }
 
@@ -472,6 +475,7 @@ function collectRoutes(file: IndexedFile, fnRanges: FunctionRange[]): RouteDef[]
         handler,
         responseKeys,
         responseLiteralLine,
+        responseShapes: {},
         envRefs,
         sql,
       });
@@ -570,7 +574,26 @@ export function collectFunctionRanges(blanked: string): FunctionRange[] {
     }
   }
 
-  return out.sort((a, b) => (a.endOffset - a.startOffset) - (b.endOffset - b.startOffset));
+  // Inline arrow callbacks, e.g. `router.get('/x', (req, res) => { ... })`.
+  // These have no name of their own, but their extent still scopes which
+  // property reads belong to the callback.
+  const arrow = /=>\s*\{/g;
+  let a: RegExpExecArray | null;
+  while ((a = arrow.exec(blanked)) !== null) {
+    const braceOffset = a.index + a[0].length - 1;
+    const close = matchBrace(blanked, braceOffset);
+    if (close === -1 || close - a.index > 200_000) continue;
+
+    const startLine = lineAt(blanked, braceOffset);
+    const endLine = lineAt(blanked, close);
+    const name = `(arrow line ${startLine})`;
+    const key = `${startLine}:${endLine}:${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, startLine, endLine, startOffset: braceOffset, endOffset: close });
+  }
+
+  return out.sort((x, y) => (x.endOffset - x.startOffset) - (y.endOffset - y.startOffset));
 }
 
 /** Innermost function containing a line, or a whole-file fallback. */
@@ -739,10 +762,19 @@ function resolveUrlArgument(expr: string, helpers?: Map<string, { template: stri
   return { url: null, source: 'unknown', helper: call?.[1] ?? null };
 }
 
-/** `${API_BASE}/api/x` → `/api/x` so it can be matched against declared routes. */
+/**
+ * Turns a template URL into a comparable static path.
+ *
+ * `${API_BASE}/api/predictions` → `/api/predictions`  (base URL removed)
+ * `${API_BASE}/api/predictions/${id}` → `/api/predictions/*`  (value unknown, so
+ * the segment becomes a wildcard and the route with `:id` can still match)
+ */
 function normaliseUrlTemplate(raw: string): string {
-  const withoutInterpolations = raw.replace(/\$\{[^}]*\}/g, '').replace(/\/\/+/g, '/');
-  return withoutInterpolations;
+  const withWildcards = raw.replace(
+    /\/(\s*)\$\{[^}]*\}|\$\{[^}]*\}/g,
+    (match, slash: string | undefined) => (slash ? '/*' : ''),
+  );
+  return withWildcards.replace(/\/\/+/g, '/');
 }
 
 function collectSqlArtifacts(file: IndexedFile): { tables: TableDef[]; queries: QueryRef[] } {
@@ -1145,6 +1177,10 @@ export async function buildCodeIndex(root: string): Promise<CodeIndex> {
     importEdges.push(...collectImports(file));
   }
 
+  // Response shapes are resolved after every query and table is known.
+  const valueShapes = buildValueShapes(files, queries, tables);
+  attachResponseShapes(routes, files, valueShapes);
+
   // Resolve relative import specifiers to real files.
   for (const edge of importEdges) {
     const fromDir = path.posix.dirname(edge.from);
@@ -1343,6 +1379,98 @@ export function buildExecutionPath(index: CodeIndex): ExecutionPathEdge[] {
   return edges.slice(0, 400);
 }
 
+/* ------------------------------------------------------------------ */
+/* Value shape inference                                              */
+/* ------------------------------------------------------------------ */
+
+export interface ValueShape {
+  keys: string[];
+  file: string;
+  line: number;
+  table: string | null;
+}
+
+/**
+ * Infers the shape of values that come out of a database query.
+ *
+ * A function whose body contains a query against exactly one table has the
+ * shape of that table's projection. This is what lets the API agent notice
+ * that a client reading `prediction.prediction.label` is asking one level too
+ * deep, without any hand-written knowledge of the application.
+ */
+export function buildValueShapes(
+  files: Map<string, IndexedFile>,
+  queries: QueryRef[],
+  tables: TableDef[],
+): Map<string, ValueShape> {
+  const tableColumns = new Map(tables.map((t) => [t.name, t.columns.map((c) => c.name)]));
+  const rangesByFile = new Map<string, FunctionRange[]>();
+  const out = new Map<string, ValueShape>();
+
+  for (const query of queries) {
+    if (query.tables.length !== 1) continue;
+    const table = query.tables[0];
+    const declared = tableColumns.get(table);
+    if (!declared) continue;
+
+    const refs = (query.columnRefs ?? [])
+      .filter((r) => r.table === table)
+      .map((r) => r.column)
+      .filter((c) => declared.includes(c));
+    if (refs.length === 0) continue;
+
+    let ranges = rangesByFile.get(query.file);
+    if (!ranges) {
+      const file = files.get(query.file);
+      if (!file) continue;
+      ranges = collectFunctionRanges(file.blanked);
+      rangesByFile.set(query.file, ranges);
+    }
+    const fn = enclosingFunctionRange(ranges, query.line, files.get(query.file)?.lines.length ?? query.line);
+    if (!fn.name) continue;
+
+    const existing = out.get(fn.name);
+    if (existing && !sameKeySet(existing.keys, refs)) continue; // ambiguous
+    out.set(fn.name, { keys: refs, file: query.file, line: fn.start, table });
+  }
+  return out;
+}
+
+function sameKeySet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((x) => set.has(x));
+}
+
+/** Resolves `key -> shape` for every response key of every route, in place. */
+export function attachResponseShapes(
+  routes: RouteDef[],
+  files: Map<string, IndexedFile>,
+  shapes: Map<string, ValueShape>,
+): void {
+  for (const route of routes) {
+    const file = files.get(route.file);
+    if (!file) continue;
+
+    for (const key of route.responseKeys) {
+      const value = (key.value ?? '').trim();
+      let fnName: string | null = null;
+      const direct = /^([A-Za-z_$][\w$]*)\s*\(/.exec(value);
+      if (direct) fnName = direct[1];
+      else if (/^[A-Za-z_$][\w$]*$/.test(value)) {
+        // Shorthand `{ prediction }` → find where `prediction` was assigned.
+        const assign = new RegExp(`\\b(?:const|let|var)\\s+${value}\\s*=\\s*([A-Za-z_$][\\w$]*)\\s*\\(`);
+        const m = assign.exec(file.code);
+        if (m?.[1]) fnName = m[1];
+      }
+      if (!fnName) continue;
+      const shape = shapes.get(fnName);
+      if (!shape) continue;
+      route.responseShapes[key.name] = { keys: shape.keys, via: `${fnName}() @ ${shape.file}:${shape.line}`, table: shape.table };
+    }
+  }
+}
+
 /** Matches a client URL against declared routes, tolerating prefixes and params. */
 export function matchRoute(routes: RouteDef[], url: string | null | undefined): RouteDef | null {
   if (!url) return null;
@@ -1352,7 +1480,12 @@ export function matchRoute(routes: RouteDef[], url: string | null | undefined): 
   const candidates = routes.filter((r) => {
     const rSeg = r.path.split('?')[0].split('/').filter(Boolean);
     if (rSeg.length === 0) return segments.length === 0;
-    if (rSeg.length !== segments.length) return false;
+    // A trailing wildcard in the URL may stand for any number of segments.
+    if (segments[segments.length - 1] === '*') {
+      if (rSeg.length < segments.length) return false;
+    } else if (rSeg.length !== segments.length) {
+      return false;
+    }
     return rSeg.every((seg, i) => seg.startsWith(':') || seg === '*' || seg === segments[i]);
   });
   if (candidates.length === 0) return null;
@@ -1366,6 +1499,8 @@ function scoreRoute(routePath: string, segments: string[]): number {
     if (rSeg[i].startsWith(':')) score += 0.5;
     else if (rSeg[i] === segments[i]) score += 1;
   }
+  // Fewer unconsumed wildcard segments is a better match.
+  score -= Math.max(0, segments.length - rSeg.length) * 0.25;
   return score;
 }
 
