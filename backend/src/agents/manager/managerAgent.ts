@@ -36,15 +36,22 @@ export const managerAgent = {
    */
   async investigate(
     ctx: AgentContext,
-    hooks: {
-      onAgentStart(agent: AgentDefinition): void;
-      onAgentNote(agent: AgentDefinition, message: string): void;
-      onAgentFinish(run: AgentRun): void;
+    hooks?: {
+      onAgentStart?(agent: AgentDefinition): void;
+      onAgentNote?(agent: AgentDefinition, message: string): void;
+      onAgentFinish?(run: AgentRun): void;
     },
   ): Promise<{ runs: AgentRun[]; findings: Finding[]; signals: Signal[] }> {
     const runs: AgentRun[] = [];
     const findings: Finding[] = [];
     const signals: Signal[] = [];
+
+    // Hooks only drive progress reporting. They must never be able to decide
+    // whether an investigation produces results, so a caller that omits them
+    // (a batch run, a test) gets the same analysis as one that supplies them.
+    const onStart = hooks?.onAgentStart?.bind(hooks) ?? (() => undefined);
+    const onNote = hooks?.onAgentNote?.bind(hooks) ?? (() => undefined);
+    const onFinish = hooks?.onAgentFinish?.bind(hooks) ?? (() => undefined);
 
     // The evidence agent is cheap and produces the shared expectations other
     // agents are scored against, so it runs first — but only for a moment.
@@ -53,12 +60,12 @@ export const managerAgent = {
     const results = await pool(ordered, Math.max(1, config.maxParallelCommands), async (definition) => {
       const childCtx: AgentContext = {
         ...ctx,
-        note: (message: string) => hooks.onAgentNote(definition, message),
+        note: (message: string) => onNote(definition, message),
       };
-      hooks.onAgentStart(definition);
+      onStart(definition);
       return runAgentSafely(definition, childCtx, {
         onStart: () => undefined,
-        onFinish: (run) => hooks.onAgentFinish(run),
+        onFinish: (run) => onFinish(run),
       });
     });
 

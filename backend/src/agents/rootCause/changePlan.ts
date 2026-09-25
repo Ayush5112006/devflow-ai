@@ -4,7 +4,7 @@ import { shortHash } from '../../utils/id.js';
 import { nowIso } from '../../utils/time.js';
 import { q } from '../../utils/format.js';
 import type { CodeIndex } from '../../analysis/codeIndex.js';
-import { nameSimilarity } from '../../analysis/codeIndex.js';
+import { nameSimilarity, toRepoPath } from '../../analysis/codeIndex.js';
 import type { EvidenceExpectation } from '../../analysis/expectations.js';
 
 /**
@@ -206,13 +206,18 @@ function buildEnvRemediation(
   index: CodeIndex,
   expectations: EvidenceExpectation,
 ): Remediation | null {
-  // Extract the undeclared name from evidence.
-  const undeclaredEv = hyp.supporting.find((e) => e.description?.includes('never declared') && indexedLocation(index, e));
+  // The hypothesis subject *is* the undeclared variable name, so locate the
+  // code evidence that reads it rather than re-parsing a phrase out of prose.
+  const readName = hyp.subject;
+  const undeclaredEv = hyp.supporting.find(
+    (e) => e.kind === 'code'
+      && indexedLocation(index, e)
+      && (e.description ?? '').includes(readName)
+      && /declares|declared/i.test(e.description ?? ''),
+  );
   if (!undeclaredEv) return null;
   const undeclaredAt = indexedLocation(index, undeclaredEv)!;
 
-  const readMatch = /Reads `([^`]+)`/.exec(undeclaredEv.description ?? '');
-  const readName = readMatch?.[1] ?? '';
   const declaredMatch = /`([^`]+)` IS declared/.exec(
     hyp.supporting.find((e) => e.description?.includes('IS declared'))?.description ?? '',
   );
@@ -328,8 +333,10 @@ function indexedLocation(
   ev: Evidence,
 ): { file: string; line: number } | null {
   const loc = ev.location;
-  if (!loc?.file || !index.files.has(loc.file)) return null;
-  return { file: loc.file, line: loc.line ?? 0 };
+  if (!loc?.file) return null;
+  const file = toRepoPath(index, loc.file);
+  if (!file) return null;
+  return { file, line: loc.line ?? 0 };
 }
 
 function buildNullAccessRemediation(

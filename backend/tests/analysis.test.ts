@@ -7,7 +7,7 @@ import {
 import {
   buildCodeIndex, collectFunctionRanges, enclosingFunctionRange, extractColumnRefs,
   extractTables, firstArgument, matchRoute, nameSimilarity, resolveTableAlias,
-  splitArguments, type RouteDef,
+  splitArguments, toRepoPath, type RouteDef,
 } from '../src/analysis/codeIndex.js';
 import { findDatabaseErrors, parseRuntimeErrors } from '../src/analysis/evidenceParse.js';
 import { pathToFileURL } from 'node:url';
@@ -241,6 +241,94 @@ test('contract checks do not leak between sibling functions', async () => {
       && c.route.path === '/api/predictions',
   );
   assert.deepEqual(crossed, []);
+});
+
+test('a container or browser path resolves to the indexed repository path', async () => {
+  const index = await buildCodeIndex(DEMO_ROOT);
+  assert.equal(toRepoPath(index, 'web/app.js'), 'web/app.js');
+  assert.equal(toRepoPath(index, '/app/web/app.js'), 'web/app.js');
+  assert.equal(toRepoPath(index, 'http://localhost:5173/app.js'), 'web/app.js');
+  assert.equal(toRepoPath(index, '/app/server/services/orderService.js'),
+    'server/services/orderService.js');
+  assert.equal(toRepoPath(index, 'not/in/this/repo.ts'), null);
+});
+
+/* --- end to end: each bug must resolve to its own cause --- */
+
+async function rootCauseFor(bugId: string) {
+  const fs = await import('node:fs/promises');
+  const { deriveExpectations } = await import('../src/analysis/expectations.js');
+  const { managerAgent } = await import('../src/agents/manager/managerAgent.js');
+  const { runRootCauseEngine } = await import('../src/agents/rootCause/rootCauseAgent.js');
+  const { loadDemoBug } = await import('../src/repositories/demoCatalog.js');
+  const { id: makeId } = await import('../src/utils/id.js');
+
+  const bug = await loadDemoBug(bugId);
+  const dir = path.join(config.demoDir, 'evidence', bugId);
+  const names = await fs.readdir(dir);
+  const evidence = [];
+  for (const name of names) {
+    const excerpt = await fs.readFile(path.join(dir, name), 'utf8');
+    evidence.push({
+      id: makeId('att'), name,
+      kind: name.includes('console') || name.includes('log') ? ('log' as const) : ('http' as const),
+      bytes: excerpt.length, excerpt, addedAt: '2026-01-01T00:00:00.000Z',
+    });
+  }
+
+  const index = await buildCodeIndex(DEMO_ROOT);
+  const expectations = deriveExpectations(evidence);
+  const agentCtx = {
+    investigationId: `t-${bugId}`,
+    workspacePath: DEMO_ROOT,
+    index,
+    expectations,
+    bug: bug.report,
+    evidence,
+    note: () => {},
+  };
+  const { signals, findings } = await managerAgent.investigate(agentCtx, {});
+  if (signals.length === 0) {
+    throw new Error(`no signals produced for ${bugId}; evidence=${evidence.length}`);
+  }
+  const { rootCause } = await runRootCauseEngine(agentCtx, signals, findings);
+  return rootCause;
+}
+
+test('d1 resolves to the API contract mismatch, not another bug in the repo', async () => {
+  const rc = await rootCauseFor('d1');
+  assert.equal(rc.hypotheses[0].category, 'API contract mismatch');
+  assert.equal(rc.hypotheses[0].subject, 'prediction');
+  assert.equal(rc.hypotheses[0].status, 'supported');
+  // The undeclared env var is a genuine defect, but it is bug d2's cause and
+  // must not be selected for d1.
+  const envHyp = rc.hypotheses.find((h) => h.category === 'Undeclared environment variable');
+  assert.ok(envHyp, 'the env var should still be surfaced');
+  assert.equal(envHyp.status, 'rejected');
+});
+
+test('d2 resolves to the undeclared environment variable', async () => {
+  const rc = await rootCauseFor('d2');
+  assert.equal(rc.hypotheses[0].category, 'Undeclared environment variable');
+  assert.equal(rc.hypotheses[0].subject, 'VITE_API_BASE');
+  assert.equal(rc.hypotheses[0].status, 'supported');
+});
+
+test('d3 resolves to the missing database column', async () => {
+  const rc = await rootCauseFor('d3');
+  assert.equal(rc.hypotheses[0].category, 'Database schema mismatch');
+  assert.equal(rc.hypotheses[0].subject, 'customer_name');
+  assert.equal(rc.hypotheses[0].status, 'supported');
+});
+
+test('a root cause never restates the symptom it is meant to explain', async () => {
+  for (const bugId of ['d1', 'd2', 'd3']) {
+    const rc = await rootCauseFor(bugId);
+    assert.notEqual(
+      rc.hypotheses[0].category, 'Runtime null/undefined access',
+      `${bugId} selected the reported TypeError as its own root cause`,
+    );
+  }
 });
 
 void pathToFileURL;

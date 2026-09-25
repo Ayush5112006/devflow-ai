@@ -1140,6 +1140,53 @@ function levenshtein(a: string, b: string): number {
  * general-purpose lexicon of domain synonyms. Used only to *rank* a rename
  * hypothesis — never on its own to assert one.
  */
+/**
+ * Map a path taken from a log, stack frame, or container onto the
+ * repository-relative path the index uses.
+ *
+ * Runtime evidence is written from the point of view of whatever produced it,
+ * so the same file can appear as `web/app.js`, `/app/web/app.js`, or
+ * `http://localhost:5173/app.js`. Matching those against indexed paths
+ * directly fails, which silently drops the very frames that explain the bug.
+ */
+export function toRepoPath(index: CodeIndex, raw: string): string | null {
+  if (!raw) return null;
+  const indexed = new Set(index.files.keys());
+
+  const cleaned = raw
+    .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, '')
+    .replace(/^file:\/\//i, '')
+    .replace(/^\.\//, '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '');
+
+  if (indexed.has(raw)) return raw;
+  if (indexed.has(cleaned)) return cleaned;
+
+  // Longest suffix that is an indexed path wins, so `server/db/index.js` is
+  // preferred over a bare `index.js` if both happen to exist.
+  const parts = cleaned.split('/').filter(Boolean);
+  for (let start = 0; start < parts.length; start++) {
+    const candidate = parts.slice(start).join('/');
+    if (indexed.has(candidate)) return candidate;
+  }
+
+  // A browser URL has no repository prefix at all (`/app.js` for
+  // `web/app.js`), so fall back to the basename — but only when it is
+  // unambiguous. Guessing between two same-named files would attach evidence
+  // to the wrong module, which is worse than leaving it unresolved.
+  const base = parts[parts.length - 1];
+  if (base) {
+    const matches: string[] = [];
+    for (const p of indexed) {
+      if (p === base || p.endsWith('/' + base)) matches.push(p);
+    }
+    if (matches.length === 1) return matches[0];
+  }
+
+  return null;
+}
+
 export function nameSimilarity(a: string, b: string): { score: number; via: string } {
   if (a === b) return { score: 1, via: 'exact' };
   const na = normalise(a);

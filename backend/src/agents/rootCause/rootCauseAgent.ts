@@ -7,6 +7,8 @@ import { id as makeId } from '../../utils/id.js';
 import { q } from '../../utils/format.js';
 import { nowIso } from '../../utils/time.js';
 import type { EvidenceExpectation } from '../../analysis/expectations.js';
+import { toRepoPath } from '../../analysis/codeIndex.js';
+import type { CodeIndex } from '../../analysis/codeIndex.js';
 
 /**
  * Root Cause Engine
@@ -72,7 +74,7 @@ const CAUSAL_KINDS = new Set<SignalKind>([
   'service-mismatch',
   'config-mismatch',
   'test-failing',
-]);
+] as SignalKind[]);
 
 /** Subjects that are parsing artefacts rather than a real thing in the code. */
 const NOT_A_SUBJECT = new Set([
@@ -109,7 +111,7 @@ export async function runRootCauseEngine(
   allFindings: Finding[],
 ): Promise<RootCauseResult> {
   const candidates = buildCandidates(allSignals);
-  const hypotheses = rankAndFilter(candidates, allSignals, ctx.expectations);
+  const hypotheses = rankAndFilter(candidates, allSignals, ctx.expectations, ctx.index);
   const best = hypotheses[0] ?? null;
   const rootCause = materializeRootCause(best, hypotheses, ctx, allFindings);
   const f = finding({
@@ -187,9 +189,14 @@ function buildCandidates(signals: Signal[]): Map<string, HypothesisCandidate> {
 function agreementWithReport(
   cand: HypothesisCandidate,
   expectations: EvidenceExpectation,
+  index: CodeIndex,
 ): { score: number; hits: string[] } {
   const hits: string[] = [];
-  const frameFiles = new Set(expectations.frames.map((f) => f.file));
+  const frameFiles = new Set(
+    expectations.frames
+      .map((f) => toRepoPath(index, f.file) ?? f.file)
+      .filter(Boolean),
+  );
   const frameSymbols = new Set(expectations.frames.map((f) => f.symbol));
   const missingProps = new Set(expectations.missingProperties.map((p) => p.name));
   const errorColumns = new Set(
@@ -204,13 +211,15 @@ function agreementWithReport(
   for (const ev of cand.supportingEvidence) {
     const loc = ev.location;
     if (!loc?.file) continue;
-    if (frameFiles.has(loc.file)) {
-      hits.push(`same file as the reported failure (${loc.file})`);
+    const file = toRepoPath(index, loc.file) ?? loc.file;
+    if (frameFiles.has(file)) {
+      hits.push(`same file as the reported failure (${file})`);
       // A frame names a line; evidence within a few lines of it is the spot.
       const near = expectations.frames.some(
-        (f) => f.file === loc.file && Math.abs(f.line - (loc.line ?? 0)) <= 5,
+        (f) => (toRepoPath(index, f.file) ?? f.file) === file
+          && Math.abs(f.line - (loc.line ?? 0)) <= 5,
       );
-      if (near) hits.push(`at the reported line (${loc.file}:${loc.line})`);
+      if (near) hits.push(`at the reported line (${file}:${loc.line})`);
     }
     if (cand.signals.some((s) => frameSymbols.has(s.subject))) {
       hits.push(`names the failing symbol ${q(cand.subject)}`);
@@ -224,8 +233,8 @@ function agreementWithReport(
     if (haystack.includes(col)) hits.push(`matches the column the database rejected (${q(col)})`);
   }
   if (expectations.malformedPaths.length > 0) {
-    const seg = expectations.malformedPaths.map((m) => m.path.split('/').pop() ?? '').join(' ');
-    if (seg.includes('undefined') && /undefined|null/i.test(haystack)) {
+    const whole = expectations.malformedPaths.map((m) => m.path).join(' ');
+    if (/undefined|null|NaN/.test(whole) && /undefined|null/i.test(haystack)) {
       hits.push('consistent with the literal `undefined` seen in the request log');
     }
   }
@@ -244,6 +253,7 @@ function rankAndFilter(
   candidates: Map<string, HypothesisCandidate>,
   allSignals: Signal[],
   expectations: EvidenceExpectation,
+  index: CodeIndex,
 ): HypothesisCandidate[] {
   // When the report names where it failed, a candidate that explains none of
   // it is demoted rather than merely out-scored, so a louder unrelated defect
@@ -254,7 +264,7 @@ function rankAndFilter(
     || expectations.malformedPaths.length > 0;
 
   for (const cand of candidates.values()) {
-    const { score, hits } = agreementWithReport(cand, expectations);
+    const { score, hits } = agreementWithReport(cand, expectations, index);
     cand.agreement = score;
     cand.agreementHits = hits;
     if (reportIsLocated) {
