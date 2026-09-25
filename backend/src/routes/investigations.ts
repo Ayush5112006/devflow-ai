@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { investigationService } from '../investigations/investigationService.js';
+import { pipelineFacts } from '../analysis/pipelineFacts.js';
 import { loadDemoBugs, PROJECTS, resolveProjectPath } from '../repositories/demoCatalog.js';
 import { badRequest } from '../utils/errors.js';
 import { nowIso } from '../utils/time.js';
@@ -29,6 +30,16 @@ router.get('/demo/bugs', async (_req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+/**
+ * What the platform actually is: the live agent registry, the real stage
+ * list, which stages need a person, and durations measured from runs that
+ * have already completed. The dashboard renders this instead of hardcoded
+ * claims, so the numbers cannot silently drift from the implementation.
+ */
+router.get('/pipeline', (_req, res) => {
+  res.json(pipelineFacts(investigationService.list()));
 });
 
 /* ------------------------------------------------------------------ */

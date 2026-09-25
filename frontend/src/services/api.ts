@@ -1,4 +1,4 @@
-import type { Investigation, DemoBug, ProjectTarget } from '../types/index.js';
+import type { Investigation, DemoBug, ProjectTarget, PipelineFacts } from '../types/index.js';
 
 const BASE = '/api';
 
@@ -30,6 +30,8 @@ export const api = {
 
   /* Demo */
   demoBugs: () => get<{ bugs: DemoBug[] }>('/demo/bugs'),
+  /** Live agent registry, real stage list, and measured durations. */
+  pipeline: () => get<PipelineFacts>('/pipeline'),
   demoQuickstart: (bugId: string) =>
     post<{ investigation: Investigation }>(`/investigations/demo/${bugId}/quickstart`),
 

@@ -111,7 +111,7 @@ export const managerAgent = {
   },
 } as const;
 
-const MANAGER_INVESTIGATION_ORDER: AgentDefinition[] = [
+export const MANAGER_INVESTIGATION_ORDER: readonly AgentDefinition[] = [
   evidenceAgent,
   codeAgent,
   apiAgent,

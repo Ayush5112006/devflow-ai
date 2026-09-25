@@ -245,6 +245,47 @@ export interface ActivityEntry {
   message: string;
 }
 
+/* --- pipeline facts, served by the backend --- */
+
+export interface StageFact {
+  id: StageId;
+  label: string;
+  requiresHuman: boolean;
+  produces: string;
+}
+
+export interface ObservedStats {
+  sampleSize: number;
+  minTotalMs: number;
+  medianTotalMs: number;
+  maxTotalMs: number;
+  medianInvestigationMs: number;
+  medianImplementationMs: number;
+  medianVerificationMs: number;
+  medianManualSteps: number;
+  medianAgentsUsed: number;
+  medianTestsExecuted: number;
+  medianFilesInspected: number;
+  medianHypothesesGenerated: number;
+  medianHypothesesRejected: number;
+}
+
+export interface PipelineFacts {
+  agents: {
+    id: string;
+    title: string;
+    stage: StageId;
+    parallelGroup: string;
+    blocking: boolean;
+  }[];
+  parallelAgentCount: number;
+  stages: StageFact[];
+  humanGateCount: number;
+  humanGateStages: string[];
+  observed: ObservedStats | null;
+  sampleSize: number;
+}
+
 export interface Investigation {
   id: string;
   bug: {
