@@ -376,3 +376,147 @@ export interface ProjectTarget {
   isDemo: boolean;
   bugCount: number;
 }
+
+/* ────────────────────────────────────────────────────────────────────
+   REPOSITORY TYPES
+   ──────────────────────────────────────────────────────────────────── */
+
+export type RepositoryProvider = 'local' | 'github';
+export type RepositorySyncStatus = 'idle' | 'syncing' | 'synced' | 'failed' | 'never';
+
+export interface Repository {
+  id: string;
+  name: string;
+  description: string;
+  provider: RepositoryProvider;
+  /** Absolute path for local repos, "owner/name" for GitHub. */
+  path: string;
+  owner: string | null;
+  fullName: string | null;
+  defaultBranch: string;
+  currentBranch: string | null;
+  visibility: 'public' | 'private' | 'unknown';
+  language: string | null;
+  stars: number;
+  openIssues: number;
+  openPRs: number;
+  lastCommitSha: string | null;
+  lastCommitMessage: string | null;
+  lastCommitAt: string | null;
+  lastSyncAt: string | null;
+  syncStatus: RepositorySyncStatus;
+  syncError: string | null;
+  addedAt: string;
+  updatedAt: string;
+}
+
+export interface RepositoryBranch {
+  name: string;
+  sha: string;
+  isDefault: boolean;
+  isProtected: boolean;
+  lastCommitMessage: string | null;
+  lastCommitAt: string | null;
+  lastCommitAuthor: string | null;
+  ahead: number;
+  behind: number;
+}
+
+export interface RepositoryCommit {
+  sha: string;
+  shortSha: string;
+  message: string;
+  author: string;
+  authorEmail: string;
+  date: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  parents: string[];
+}
+
+export interface RepositoryCommitDetail extends RepositoryCommit {
+  diff: string;
+  files: { filename: string; status: string; additions: number; deletions: number; patch: string }[];
+}
+
+export interface GitFileEntry {
+  path: string;
+  name: string;
+  type: 'file' | 'dir';
+  size: number;
+  language: string | null;
+}
+
+export interface RepositoryIssue {
+  id: string;
+  number: number;
+  title: string;
+  body: string;
+  state: 'open' | 'closed';
+  author: string;
+  assignee: string | null;
+  labels: string[];
+  createdAt: string;
+  updatedAt: string;
+  url: string | null;
+  investigationId?: string;
+}
+
+export interface RepositoryPR {
+  id: string;
+  number: number;
+  title: string;
+  body: string;
+  state: 'open' | 'closed' | 'merged' | 'draft';
+  author: string;
+  sourceBranch: string;
+  targetBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  mergedAt: string | null;
+  url: string | null;
+  checks: { name: string; status: 'pass' | 'fail' | 'pending' }[];
+  additions: number;
+  deletions: number;
+  reviewStatus: 'approved' | 'changes_requested' | 'pending' | 'none';
+}
+
+export interface GitStatusFile {
+  path: string;
+  status: 'M' | 'A' | 'D' | 'R' | '?' | 'U';
+  staged: boolean;
+}
+
+export interface DetailedGitStatus {
+  available: boolean;
+  branch: string | null;
+  remoteBranch: string | null;
+  ahead: number;
+  behind: number;
+  clean: boolean;
+  files: GitStatusFile[];
+  latestCommit: string | null;
+  latestMessage: string | null;
+  latestAuthor: string | null;
+  latestDate: string | null;
+  recentCommits: { hash: string; message: string; author: string; date: string }[];
+}
+
+export interface GitHubStatus {
+  configured: boolean;
+  login: string | null;
+  name: string | null;
+  avatarUrl: string | null;
+  rateLimitRemaining: number | null;
+  rateLimitReset: string | null;
+  error: string | null;
+}
+
+export interface WebhookConfig {
+  configured: boolean;
+  webhookUrl: string;
+  secretConfigured: boolean;
+  supportedEvents: string[];
+  instructions: string;
+}
