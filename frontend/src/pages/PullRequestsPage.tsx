@@ -107,24 +107,34 @@ export function PullRequestsPage() {
 
   return (
     <div className="page-content stack" style={{ gap: 22 }}>
+      {/* Live data banner — shown prominently when an investigation has a real PR summary */}
+      {liveData && (
+        <div className="banner banner-ok" style={{ borderColor: 'var(--accent)', background: 'rgba(124,92,252,.06)' }}>
+          <div>
+            <p className="banner-title" style={{ color: 'var(--accent)' }}>
+              ✓ Live PR draft ready — from completed investigation
+            </p>
+            <p className="banner-text">
+              Investigation <span className="mono" style={{ fontSize: 11 }}>{liveData.invId?.slice(0, 8)}</span> completed successfully.
+              A real PR description has been generated from the root cause, change plan, and test results.
+            </p>
+          </div>
+          <button className="btn btn-sm btn-primary" onClick={() => setTab('generate')}>
+            View live PR draft →
+          </button>
+        </div>
+      )}
+
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={tab === 'list'} className="tab" onClick={() => setTab('list')}>Pull Requests</button>
-        <button role="tab" aria-selected={tab === 'generate'} className="tab" onClick={() => setTab('generate')}>Generate PR</button>
+        <button role="tab" aria-selected={tab === 'generate'} className="tab" onClick={() => setTab('generate')}>
+          Generate PR {liveData ? <span className="badge badge-live" style={{ marginLeft: 6, fontSize: 9 }}>LIVE</span> : null}
+        </button>
       </div>
 
       {tab === 'list' && (
         <div className="card-grid-sidebar">
           <div className="stack" style={{ gap: 10 }}>
-            {/* Live PR from investigation */}
-            {liveData && (
-              <div className="banner banner-ok">
-                <div>
-                  <p className="banner-title" style={{ color: 'var(--accent)' }}>✓ Live investigation report available</p>
-                  <p className="banner-text">A completed investigation has a PR summary. See the Generate PR tab to view it.</p>
-                </div>
-                <button className="btn btn-sm" onClick={() => setTab('generate')}>View PR draft →</button>
-              </div>
-            )}
             {DEMO_PRS.map((pr) => (
               <button
                 key={pr.id}

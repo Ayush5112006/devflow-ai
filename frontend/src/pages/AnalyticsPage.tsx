@@ -19,6 +19,29 @@ export function AnalyticsPage() {
   const failed = investigations.filter((i) => i.status === 'failed');
   const obs = pipeline?.observed;
 
+  // Build a real audit trail from investigation state transitions
+  const auditEntries = React.useMemo(() => {
+    if (investigations.length === 0) return [];
+    const entries: { when: string; actor: string; action: string; object: string; result: string; timestamp: string }[] = [];
+    investigations.forEach((inv: any) => {
+      const id = inv.id?.slice(0, 8) ?? 'unknown';
+      const title = inv.bug?.title?.slice(0, 40) ?? 'investigation';
+      entries.push({ when: inv.createdAt, actor: 'Developer', action: 'Created', object: `Investigation ${id} — ${title}`, result: 'info', timestamp: inv.createdAt });
+      if (inv.status === 'awaiting_approval' || ['approved','implementing','verifying','regressing','completed','failed'].includes(inv.status)) {
+        entries.push({ when: inv.updatedAt, actor: 'Manager Agent', action: 'Completed', object: `Investigation pipeline — ${id}`, result: 'success', timestamp: inv.updatedAt });
+      }
+      if (inv.status === 'completed') {
+        entries.push({ when: inv.updatedAt, actor: 'System', action: 'Completed', object: `Fix verified — ${id}`, result: 'success', timestamp: inv.updatedAt });
+      }
+      if (inv.status === 'failed') {
+        entries.push({ when: inv.updatedAt, actor: 'System', action: 'Failed', object: `Investigation ${id}`, result: 'danger', timestamp: inv.updatedAt });
+      }
+    });
+    return entries
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 12);
+  }, [investigations]);
+
   return (
     <div className="page-content stack" style={{ gap: 28 }}>
       {/* Engineering Scorecard */}
@@ -143,38 +166,64 @@ export function AnalyticsPage() {
       <section>
         <div className="section-heading">
           <h2>Audit Log</h2>
-          <p>Who did what, when</p>
+          <div className="row" style={{ gap: 8 }}>
+            <p>System actions and developer decisions</p>
+            {auditEntries.length > 0
+              ? <Badge variant="success" dot>LIVE</Badge>
+              : <span className="demo-notice">DEMO DATA</span>}
+          </div>
         </div>
         <Card flush>
-          <table className="table">
-            <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th></tr></thead>
-            <tbody>
-              {[
-                { when: '14:30', actor: 'Developer', action: 'Approved', object: 'Change plan INV-003', result: 'success' },
-                { when: '14:27', actor: 'RootCause Agent', action: 'Completed', object: 'Root cause analysis', result: 'success' },
-                { when: '14:25', actor: 'Database Agent', action: 'Found', object: 'SQL column mismatch (SEC-001)', result: 'info' },
-                { when: '14:24', actor: 'Manager Agent', action: 'Started', object: 'Investigation INV-003', result: 'info' },
-                { when: '14:21', actor: 'System', action: 'Detected', object: 'Incident INC-001', result: 'warn' },
-                { when: '12:25', actor: 'System', action: 'Resolved', object: 'Incident INC-002', result: 'success' },
-                { when: '12:20', actor: 'Developer', action: 'Approved', object: 'Change plan INV-002', result: 'success' },
-                { when: '12:05', actor: 'Developer', action: 'Created', object: 'Investigation INV-002', result: 'info' },
-              ].map((entry, i) => (
-                <tr key={i}>
-                  <td className="mono" style={{ fontSize: 11 }}>{entry.when}</td>
-                  <td style={{ fontSize: 12 }}>{entry.actor}</td>
-                  <td style={{ fontSize: 12 }}>{entry.action}</td>
-                  <td style={{ fontSize: 12, color: 'var(--muted)' }}>{entry.object}</td>
-                  <td>
-                    <Badge variant={entry.result === 'success' ? 'success' : entry.result === 'warn' ? 'warn' : 'info'} dot>
-                      {entry.result}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {auditEntries.length > 0 ? (
+            <table className="table">
+              <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th></tr></thead>
+              <tbody>
+                {auditEntries.map((entry, i) => (
+                  <tr key={i}>
+                    <td className="mono" style={{ fontSize: 11 }}>
+                      {new Date(entry.when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td style={{ fontSize: 12 }}>{entry.actor}</td>
+                    <td style={{ fontSize: 12 }}>{entry.action}</td>
+                    <td style={{ fontSize: 12, color: 'var(--muted)' }}>{entry.object}</td>
+                    <td>
+                      <Badge variant={entry.result === 'success' ? 'success' : entry.result === 'danger' ? 'danger' : entry.result === 'warn' ? 'warn' : 'info'} dot>
+                        {entry.result}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <table className="table">
+              <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Object</th><th>Result</th></tr></thead>
+              <tbody>
+                {[
+                  { when: '14:30', actor: 'Developer', action: 'Approved', object: 'Change plan INV-003', result: 'success' },
+                  { when: '14:27', actor: 'RootCause Agent', action: 'Completed', object: 'Root cause analysis', result: 'success' },
+                  { when: '14:25', actor: 'Database Agent', action: 'Found', object: 'SQL column mismatch', result: 'info' },
+                  { when: '14:24', actor: 'Manager Agent', action: 'Started', object: 'Investigation INV-003', result: 'info' },
+                  { when: '12:25', actor: 'System', action: 'Resolved', object: 'Incident INC-002', result: 'success' },
+                  { when: '12:05', actor: 'Developer', action: 'Created', object: 'Investigation INV-002', result: 'info' },
+                ].map((entry, i) => (
+                  <tr key={i}>
+                    <td className="mono" style={{ fontSize: 11 }}>{entry.when}</td>
+                    <td style={{ fontSize: 12 }}>{entry.actor}</td>
+                    <td style={{ fontSize: 12 }}>{entry.action}</td>
+                    <td style={{ fontSize: 12, color: 'var(--muted)' }}>{entry.object}</td>
+                    <td>
+                      <Badge variant={entry.result === 'success' ? 'success' : 'info'} dot>{entry.result}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           <p style={{ padding: '8px 16px 12px', fontSize: 11, color: 'var(--subtle)', margin: 0 }}>
-            DEMO — showing sample audit log. Live audit entries are generated from completed investigations.
+            {auditEntries.length > 0
+              ? `${auditEntries.length} real audit events from this session's investigations.`
+              : 'DEMO DATA — run an investigation to generate real audit entries.'}
           </p>
         </Card>
       </section>

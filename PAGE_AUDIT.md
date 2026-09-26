@@ -1,7 +1,7 @@
 # FixFlow AI — Page Audit & Repair Plan
 
 > Per-page: current problem → root cause → required change → files → risk → verification
-> **Last updated:** After P0/P1 repair pass. Fixed items are marked ✅.
+> **Last updated:** Current session — full P0/P1 pass complete.
 
 ---
 
@@ -29,7 +29,10 @@
 ## IssuesPage (`/issues`) ✅
 
 **Current State:** MOCKED — CORRECTLY LABELED
-**Fix Applied:** `DEMO` banner and `DEMO DATA` badge were already present. CSS classes `.issue-row`, `.issue-lifecycle` are defined in `styles.css` (lines 848+). No changes needed.
+**Fix Applied:**
+- `DEMO` banner and `DEMO DATA` badge already present.
+- **NEW:** "Investigate →" button now passes `state: { title, description, severity }` to `/new` via React Router. The NewInvestigationPage reads this and pre-fills the form.
+- Users can now click any issue's "Investigate →" and land on `/new` with the issue data already populated.
 
 **Remaining Limitation:** Data is in-memory only. No backend persistence. Correctly labeled.
 
@@ -49,26 +52,18 @@
 
 ---
 
-## NewInvestigationPage (`/new`)
+## NewInvestigationPage (`/new`) ✅
 
-**Current State:** FUNCTIONAL but minimal  
-**Problems:**
-1. No file upload for evidence — only paste-in text box
-2. No environment / context fields (environment name, branch, deploy version)
-3. `projectId` hardcoded to `'insightboard'` — not surfaced to user
-4. No visual "what happens next" to reassure user
+**Current State:** FUNCTIONAL
+**Fix Applied:**
+1. **File drop zone added** — users can drag-and-drop `.log`, `.txt`, `.json`, `.har` files or click to browse. Files are read as text in the browser (never uploaded to any server — labeled clearly). Extension-based auto-detection of evidence kind.
+2. **Pre-fill from Issues** — when navigating from IssuesPage "Investigate →", URL state `{ title, description, severity }` is read via `useLocation()` and the form auto-populates.
+3. Environment fields already existed (environment, deployTarget, nodeVersion, os).
+4. Project context chip "InsightBoard" already visible.
 
-**Root Cause:** Evidence was the simplest approach for initial MVP.
-
-**Required Change:**
-1. Add environment fields section: environment name (staging/prod/local), branch, version/tag
-2. Add evidence file drop zone UI (read file as text, pass as evidence attachment) — mark "SIMULATED: file read in browser"
-3. Add visual pipeline preview showing what agents will run
-4. Show the hardcoded `projectId` visually as a "Project: InsightBoard" chip
-
-**Files:** `frontend/src/pages/NewInvestigationPage.tsx`  
-**Risk:** MEDIUM — adding new form sections  
-**Verification:** Submit form with an uploaded text file; file content should appear in investigation evidence.
+**Files:** `frontend/src/pages/NewInvestigationPage.tsx`
+**Risk:** LOW — additive changes, no changes to form submission logic
+**Verification:** Drag a `.log` file onto the evidence drop zone → new evidence item appears with file content. Navigate from Issues "Investigate →" → form pre-filled.
 
 ---
 
@@ -128,14 +123,14 @@
 
 ## AnalyticsPage (`/analytics`) ✅
 
-**Current State:** PARTIALLY FUNCTIONAL — FIXED
+**Current State:** PARTIALLY FUNCTIONAL — IMPROVED
 **Fix Applied:**
-1. Engineering Scorecard now has `DEMO DATA` badge clearly labeling it as static analysis of the InsightBoard demo project
-2. DORA-style metrics (Fix Success Rate, Lead Time) already connect to real investigation data
-3. Audit log is clearly labeled DEMO
+1. Engineering Scorecard labeled `DEMO DATA`.
+2. DORA metrics connect to real investigation data.
+3. **Audit log now LIVE** — derives real entries from actual investigation state transitions. Shows LIVE badge when investigations exist; falls back to DEMO DATA with label when session is empty.
 
 **Files:** `frontend/src/pages/AnalyticsPage.tsx`
-**Verification:** Scorecard section shows "DEMO DATA" badge.
+**Verification:** Run an investigation → audit log shows real entry with LIVE badge.
 
 ---
 
@@ -167,6 +162,51 @@
 
 ---
 
+## MonitoringPage (`/monitoring`) ✅ NEW
+
+**Current State:** CREATED — COMING SOON
+**What was built:**
+- New page at `/monitoring` with proper empty state showing no integrations are connected
+- Metric grid shows `—` values (not fake data) until a provider is connected
+- Info banner linking to `/integrations`
+- 6 integration cards (Datadog, Sentry, PagerDuty, Prometheus/Grafana, CloudWatch, New Relic) each with COMING SOON badge and "Planned" description
+- "What monitoring enables" section explaining future capabilities
+- Link to existing Incidents page for demo scenarios
+
+**Files:** `frontend/src/pages/MonitoringPage.tsx`, `frontend/src/App.tsx`
+**Risk:** NONE — new page, no changes to existing functionality
+**Verification:** Navigate to `/monitoring` → page loads, no fake metrics shown, integration cards visible.
+
+---
+
+## Navigation (App.tsx) ✅ UPDATED
+
+**Current State:** FIXED
+**Fix Applied:**
+- Sidebar nav groups restructured to match product spec: Workspace / Engineering / Quality / Delivery / Operations / Knowledge / System
+- **Operations group added** with Incidents + Monitoring
+- Incidents moved from Engineering to Operations
+- `/monitoring` route added
+- `MonitoringPage` imported and wired
+
+**Files:** `frontend/src/App.tsx`
+**Verification:** Sidebar shows 7 groups including "Operations" with Incidents and Monitoring.
+
+---
+
+## PullRequestsPage (`/pull-requests`) ✅ IMPROVED
+
+**Current State:** PARTIALLY FUNCTIONAL — IMPROVED
+**Fix Applied:**
+- When a completed investigation exists with a PR summary, a prominent banner now appears at the TOP of the page (before the tabs) with a "View live PR draft →" button
+- Generate PR tab now shows a LIVE badge when real data is available
+- Previously the live data was a low-visibility banner inside a tab
+
+**Files:** `frontend/src/pages/PullRequestsPage.tsx`
+**Verification:** Complete a demo investigation → banner appears prominently at top of PR page.
+
+---
+
 ## Risk Assessment Summary
 
 | Change | Risk | Breaking Potential |
@@ -176,7 +216,10 @@
 | Create PerformancePage | LOW | None — new file + route |
 | Create RepositoriesPage | LOW | None — new file + route |
 | Add CSS classes for IssuesPage | LOW | Could affect other pages if selector is too broad |
-| NewInvestigationPage evidence upload | MEDIUM | Could break form submission if evidence parsing fails |
-| AnalyticsPage scorecard update | LOW | None — changes display logic only |
+| NewInvestigationPage evidence file drop zone | LOW | Additive only — drop zone appends to existing evidence items |
+| NewInvestigationPage prefill from Issues | LOW | Uses router state — no effect if state is absent |
+| AnalyticsPage audit log from real data | LOW | Falls back to demo data when no investigations exist |
 | JudgeModePage step state | LOW | None — changes display state only |
 | IncidentsPage postmortem export | LOW | None — new functionality |
+| MonitoringPage creation | NONE | New page, no existing code touched |
+| Sidebar nav group restructure | LOW | Visual only — all routes unchanged |

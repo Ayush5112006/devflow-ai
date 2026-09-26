@@ -25,6 +25,7 @@ import { IntegrationsPage } from './pages/IntegrationsPage.js';
 import { DependenciesPage } from './pages/DependenciesPage.js';
 import { PerformancePage } from './pages/PerformancePage.js';
 import { RepositoriesPage } from './pages/RepositoriesPage.js';
+import { MonitoringPage } from './pages/MonitoringPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
 import { CommandPalette } from './components/CommandPalette.js';
@@ -43,12 +44,11 @@ const NAV_SECTIONS = [
     items: [
       { to: '/issues', icon: '◎', label: 'Issues' },
       { to: '/investigations', icon: '◐', label: 'Investigations' },
-      { to: '/incidents', icon: '⚡', label: 'Incidents' },
       { to: '/debugging', icon: '⊘', label: 'Debugging' },
     ],
   },
   {
-    label: 'Code',
+    label: 'Quality',
     items: [
       { to: '/code-intelligence', icon: '◑', label: 'Code Intelligence' },
       { to: '/code-review', icon: '◧', label: 'Code Review' },
@@ -67,6 +67,13 @@ const NAV_SECTIONS = [
     ],
   },
   {
+    label: 'Operations',
+    items: [
+      { to: '/incidents', icon: '⚡', label: 'Incidents' },
+      { to: '/monitoring', icon: '◉', label: 'Monitoring' },
+    ],
+  },
+  {
     label: 'Knowledge',
     items: [
       { to: '/knowledge', icon: '▤', label: 'Knowledge Base' },
@@ -77,8 +84,8 @@ const NAV_SECTIONS = [
     label: 'System',
     items: [
       { to: '/integrations', icon: '⌥', label: 'Integrations' },
-      { to: '/performance', icon: '◈', label: 'Performance' },
-      { to: '/judge', icon: '◎', label: 'Judge Mode' },
+      { to: '/performance', icon: '⚡', label: 'Performance' },
+      { to: '/judge', icon: '◬', label: 'Judge Mode' },
       { to: '/metrics', icon: '◐', label: 'Metrics' },
       { to: '/settings', icon: '⚙', label: 'Settings' },
     ],
@@ -93,6 +100,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/investigations': 'Investigations',
   '/new': 'New Investigation',
   '/incidents': 'Incidents',
+  '/monitoring': 'Monitoring',
   '/debugging': 'Log Intelligence',
   '/code-intelligence': 'Code Intelligence',
   '/code-review': 'Code Review',
@@ -285,6 +293,7 @@ export function App() {
               <Route path="/dependencies" element={<DependenciesPage />} />
               <Route path="/performance" element={<PerformancePage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
+              <Route path="/monitoring" element={<MonitoringPage />} />
               <Route
                 path="*"
                 element={
