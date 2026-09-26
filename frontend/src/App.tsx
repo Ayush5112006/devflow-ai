@@ -25,6 +25,7 @@ import { IntegrationsPage } from './pages/IntegrationsPage.js';
 import { DependenciesPage } from './pages/DependenciesPage.js';
 import { PerformancePage } from './pages/PerformancePage.js';
 import { RepositoriesPage } from './pages/RepositoriesPage.js';
+import { RepositoryDetailPage } from './pages/RepositoryDetailPage.js';
 import { MonitoringPage } from './pages/MonitoringPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
@@ -122,6 +123,7 @@ const PAGE_TITLES: Record<string, string> = {
 
 function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/investigations/')) return 'Investigation Detail';
+  if (pathname.startsWith('/repositories/') && pathname !== '/repositories') return 'Repository Detail';
   return PAGE_TITLES[pathname] ?? 'FixFlow AI';
 }
 
@@ -293,6 +295,7 @@ export function App() {
               <Route path="/dependencies" element={<DependenciesPage />} />
               <Route path="/performance" element={<PerformancePage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
+              <Route path="/repositories/:id" element={<RepositoryDetailPage />} />
               <Route path="/monitoring" element={<MonitoringPage />} />
               <Route
                 path="*"
