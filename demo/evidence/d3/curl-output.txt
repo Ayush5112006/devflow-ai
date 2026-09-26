@@ -1,0 +1,36 @@
+========================================================================
+d3 · HTTP responses captured with curl
+captured at   2026-09-25T16:52:14.472Z
+captured by   backend/scripts/seedDemo.ts against a live InsightBoard process.
+
+========================================================================
+
+$ curl -i /api/orders
+HTTP/1.1 500 Internal Server Error
+content-type: application/json; charset=utf-8
+
+{"error":"internal_error","message":"no such column: o.customer_name"}
+
+$ curl -i /api/orders/1
+HTTP/1.1 500 Internal Server Error
+content-type: application/json; charset=utf-8
+
+{"error":"internal_error","message":"no such column: o.customer_name"}
+
+$ curl -i /api/revenue
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+
+{"totals":[{"status":"paid","total":40700},{"status":"pending","total":45200},{"status":"refunded","total":9900}]}
+
+--- the target project's own suite, for reference ---
+$ npm test
+# pass 7
+# fail 4
+not ok  test/orders.service.test.js :: listOrders returns every seeded order
+not ok  test/orders.service.test.js :: listOrders exposes the order view fields
+not ok  test/orders.service.test.js :: getOrder returns a single order
+not ok  test/webConfig.test.js :: every env var read by the web bundle is declared in .env.example
+
+The orders failures are defect d3. The suite calls the services directly,
+so it never exercises the HTTP layer and cannot see d1 or d2.
