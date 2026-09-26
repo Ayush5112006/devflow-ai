@@ -4,13 +4,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { config } from './config.js';
 import { router } from './routes/investigations.js';
 import { repositoriesRouter } from './routes/repositories.js';
-<<<<<<< HEAD
-import { integrationsRouter } from './routes/integrations.js';
-=======
->>>>>>> origin/main
 import { FixFlowError } from './utils/errors.js';
 import { createLogger } from './utils/logger.js';
-import { ensureWorkspaceRepository } from './repositories/repositoryStore.js';
 
 const log = createLogger('server');
 
@@ -30,24 +25,6 @@ app.use(cors({
   credentials: true,
 }));
 
-<<<<<<< HEAD
-// Raw body capture for the webhook endpoint (must come BEFORE json middleware)
-app.use('/api/integrations/github/webhook', (req, _res, next) => {
-  const chunks: Buffer[] = [];
-  req.on('data', (chunk: Buffer) => chunks.push(chunk));
-  req.on('end', () => {
-    (req as any).rawBody = Buffer.concat(chunks);
-    next();
-  });
-  req.on('error', next);
-});
-
-// Parse JSON bodies, but not for SSE routes or the webhook endpoint.
-app.use((req, _res, next) => {
-  if (req.path.endsWith('/stream')) return next();
-  if (req.path === '/api/integrations/github/webhook') return next();
-  express.json({ limit: '5mb' })(req, _res, next);
-=======
 // Parse JSON bodies, keeping raw body buffer for webhook signature validation, not for SSE routes.
 app.use((req, res, next) => {
   if (req.path.endsWith('/stream')) return next();
@@ -57,7 +34,6 @@ app.use((req, res, next) => {
       req.rawBody = buf.toString();
     },
   })(req, res, next);
->>>>>>> origin/main
 });
 
 /* ------------------------------------------------------------------ */
@@ -73,12 +49,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api', router);
-<<<<<<< HEAD
-app.use('/api/repositories', repositoriesRouter);
-app.use('/api/integrations', integrationsRouter);
-=======
 app.use('/api', repositoriesRouter);
->>>>>>> origin/main
 
 /* ------------------------------------------------------------------ */
 /* Error handling                                                     */
@@ -116,13 +87,6 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 /* ------------------------------------------------------------------ */
 /* Start                                                              */
 /* ------------------------------------------------------------------ */
-
-// Ensure workspace repository is registered at startup
-try {
-  ensureWorkspaceRepository();
-} catch (err) {
-  log.warn('Could not register workspace repository', err instanceof Error ? err.message : String(err));
-}
 
 app.listen(config.port, config.host, () => {
   log.info(`FixFlow AI backend listening on http://${config.host}:${config.port}`);

@@ -126,7 +126,6 @@ const PAGE_TITLES: Record<string, string> = {
 
 function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/investigations/')) return 'Investigation Detail';
-  if (pathname.startsWith('/repositories/') && pathname !== '/repositories') return 'Repository Detail';
   return PAGE_TITLES[pathname] ?? 'FixFlow AI';
 }
 
@@ -298,11 +297,7 @@ export function App() {
               <Route path="/dependencies" element={<DependenciesPage />} />
               <Route path="/performance" element={<PerformancePage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
-<<<<<<< HEAD
-              <Route path="/repositories/:id" element={<RepositoryDetailPage />} />
-=======
               <Route path="/repositories/:repositoryId" element={<RepositoryDetailPage />} />
->>>>>>> origin/main
               <Route path="/monitoring" element={<MonitoringPage />} />
               <Route path="/postmortems" element={<PostmortemsPage />} />
               <Route
