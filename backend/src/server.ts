@@ -3,6 +3,7 @@ import cors from 'cors';
 import type { Request, Response, NextFunction } from 'express';
 import { config } from './config.js';
 import { router } from './routes/investigations.js';
+import { repositoriesRouter } from './routes/repositories.js';
 import { FixFlowError } from './utils/errors.js';
 import { createLogger } from './utils/logger.js';
 
@@ -24,10 +25,15 @@ app.use(cors({
   credentials: true,
 }));
 
-// Parse JSON bodies, but not for SSE routes.
-app.use((req, _res, next) => {
+// Parse JSON bodies, keeping raw body buffer for webhook signature validation, not for SSE routes.
+app.use((req, res, next) => {
   if (req.path.endsWith('/stream')) return next();
-  express.json({ limit: '5mb' })(req, _res, next);
+  express.json({
+    limit: '5mb',
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })(req, res, next);
 });
 
 /* ------------------------------------------------------------------ */
@@ -43,6 +49,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api', router);
+app.use('/api', repositoriesRouter);
 
 /* ------------------------------------------------------------------ */
 /* Error handling                                                     */

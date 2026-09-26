@@ -25,6 +25,7 @@ import { IntegrationsPage } from './pages/IntegrationsPage.js';
 import { DependenciesPage } from './pages/DependenciesPage.js';
 import { PerformancePage } from './pages/PerformancePage.js';
 import { RepositoriesPage } from './pages/RepositoriesPage.js';
+import { RepositoryDetailPage } from './pages/RepositoryDetailPage.js';
 import { MonitoringPage } from './pages/MonitoringPage.js';
 import { PostmortemsPage } from './pages/PostmortemsPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
@@ -296,6 +297,7 @@ export function App() {
               <Route path="/dependencies" element={<DependenciesPage />} />
               <Route path="/performance" element={<PerformancePage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
+              <Route path="/repositories/:repositoryId" element={<RepositoryDetailPage />} />
               <Route path="/monitoring" element={<MonitoringPage />} />
               <Route path="/postmortems" element={<PostmortemsPage />} />
               <Route
