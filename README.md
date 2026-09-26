@@ -198,9 +198,22 @@ npm run dev:frontend    # http://localhost:5173
 ## Running Tests
 
 ```bash
-npm test                # backend unit + integration tests (23 tests)
+npm test                # backend unit + integration tests (35 tests)
 npm run typecheck       # typecheck both backend and frontend
 ```
+
+---
+
+## Repositories & GitHub Integration
+
+FixFlow AI includes a real repository workspace (`/repositories`):
+- **Local Git Repository**: Automatically discovers the local Git workspace (`devflow-ai`), introspects active branch (`ASHISH`), clean/dirty working tree, and staged/unstaged diffs.
+- **GitHub Integration**: Connects using standard `GITHUB_TOKEN` environment variables without exposing tokens in the UI. Supports listing user repos, importing repos, viewing remote issues and pull requests, and creating issues/PRs.
+- **File Explorer**: Real repository file explorer with directory traversal and code inspection.
+- **Issue → Investigation Workflow**: 1-click **⚡ Start Investigation** from any repository issue directly into FixFlow's multi-agent AI debugging swarm with repository context pre-attached.
+- **Automated PR Engine**: Generates pull request previews with change summaries, files changed, and regression test results ready for human-approved opening.
+- **Cryptographic Webhooks**: HMAC-SHA256 verified webhook endpoint (`/api/repositories/github/webhook`) for live push, issue, and pull request event ingestion.
+
 
 ---
 

@@ -3,6 +3,8 @@ import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-do
 import { DashboardPage } from './pages/DashboardPage.js';
 import { NewInvestigationPage } from './pages/NewInvestigationPage.js';
 import { InvestigationPage } from './pages/InvestigationPage.js';
+import { RepositoriesPage } from './pages/RepositoriesPage.js';
+import { RepositoryDetailPage } from './pages/RepositoryDetailPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
 import { CommandPalette } from './components/CommandPalette.js';
@@ -46,6 +48,7 @@ function Layout({ children }: { children: React.ReactNode }) {
           </Link>
           <nav className="app-nav">
             <NavLink to="/">Dashboard</NavLink>
+            <NavLink to="/repositories">Repositories</NavLink>
             <NavLink to="/new">New Investigation</NavLink>
           </nav>
           <button
@@ -75,6 +78,8 @@ export function App() {
           <Layout>
             <Routes>
               <Route path="/" element={<DashboardPage />} />
+              <Route path="/repositories" element={<RepositoriesPage />} />
+              <Route path="/repositories/:repositoryId" element={<RepositoryDetailPage />} />
               <Route path="/new" element={<NewInvestigationPage />} />
               <Route path="/investigations/:id" element={<InvestigationPage />} />
               <Route

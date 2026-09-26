@@ -35,6 +35,11 @@ export const config = {
   llmModel: process.env.FIXFLOW_LLM_MODEL ?? 'llama3.2',
   /** Cap on how many worker commands may run at the same time. */
   maxParallelCommands: num('FIXFLOW_MAX_PARALLEL_COMMANDS', 4),
+  /** GitHub Integration configuration (optional) */
+  githubToken: process.env.GITHUB_TOKEN ?? '',
+  githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
+  githubApiUrl: process.env.GITHUB_API_URL ?? 'https://api.github.com',
 } as const;
 
 export const isLlmEnabled = (): boolean => config.llmUrl.length > 0;
+export const isGithubConfigured = (): boolean => config.githubToken.trim().length > 0;

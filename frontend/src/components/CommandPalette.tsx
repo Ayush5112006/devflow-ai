@@ -24,6 +24,7 @@ export function CommandPalette({ open, onClose, extraActions = [] }: Props) {
 
   const baseActions: PaletteAction[] = [
     { id: 'dashboard', label: 'Open Dashboard', icon: '⊞', action: () => { navigate('/'); onClose(); } },
+    { id: 'repositories', label: 'Open Repositories', description: 'Browse and manage code repositories, issues & PRs', icon: '🗄️', action: () => { navigate('/repositories'); onClose(); } },
     { id: 'new', label: 'New Investigation', description: 'Start investigating a bug', icon: '+', action: () => { navigate('/new'); onClose(); } },
   ];
 
