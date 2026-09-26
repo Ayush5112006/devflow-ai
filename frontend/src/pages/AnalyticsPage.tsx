@@ -25,7 +25,10 @@ export function AnalyticsPage() {
       <section>
         <div className="section-heading">
           <h2>Engineering Scorecard</h2>
-          <p>Based on session data + static analysis</p>
+          <div className="row" style={{ gap: 8 }}>
+            <p>InsightBoard demo project — static analysis</p>
+            <span className="demo-notice">DEMO DATA</span>
+          </div>
         </div>
         <div className="scorecard-grid">
           {[

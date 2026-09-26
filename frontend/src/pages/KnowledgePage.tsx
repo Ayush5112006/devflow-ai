@@ -87,12 +87,32 @@ export function KnowledgePage() {
   const [newKey, setNewKey] = useState('');
   const [newVal, setNewVal] = useState('');
   const [memoryEntries, setMemoryEntries] = useState(AI_MEMORY_ENTRIES);
+  const [articles, setArticles] = useState<KnowledgeArticle[]>(DEMO_ARTICLES);
+  const [creatingArticle, setCreatingArticle] = useState(false);
+  const [newArticle, setNewArticle] = useState({ title: '', category: 'General', content: '', tags: '' });
 
-  const filtered = DEMO_ARTICLES.filter((a) =>
+  const filtered = articles.filter((a) =>
     !search || a.title.toLowerCase().includes(search.toLowerCase()) ||
     a.content.toLowerCase().includes(search.toLowerCase()) ||
     a.tags.some((t) => t.includes(search.toLowerCase()))
   );
+
+  function saveNewArticle() {
+    if (!newArticle.title.trim() || !newArticle.content.trim()) return;
+    const article: KnowledgeArticle = {
+      id: `kb-${Date.now()}`,
+      title: newArticle.title,
+      category: newArticle.category,
+      content: newArticle.content,
+      tags: newArticle.tags.split(',').map((t) => t.trim()).filter(Boolean),
+      updatedAt: new Date().toISOString().slice(0, 10),
+      source: 'manual',
+    };
+    setArticles((prev) => [article, ...prev]);
+    setSelected(article);
+    setCreatingArticle(false);
+    setNewArticle({ title: '', category: 'General', content: '', tags: '' });
+  }
 
   return (
     <div className="page-content stack" style={{ gap: 22 }}>
@@ -112,8 +132,45 @@ export function KnowledgePage() {
               onChange={(e) => setSearch(e.target.value)}
               style={{ flex: 1 }}
             />
-            <button className="btn btn-primary btn-sm">+ New Article</button>
+            <button className="btn btn-primary btn-sm" onClick={() => setCreatingArticle(true)}>+ New Article</button>
           </div>
+
+          {creatingArticle && (
+            <div className="panel" style={{ padding: '16px' }}>
+              <div className="spread" style={{ marginBottom: 14 }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>New Knowledge Article</p>
+                <button className="btn btn-sm btn-link" onClick={() => setCreatingArticle(false)}>✕ Cancel</button>
+              </div>
+              <div className="stack" style={{ gap: 12 }}>
+                <label className="field">
+                  <span className="field-label">Title <span style={{ color: 'var(--danger)' }}>*</span></span>
+                  <input className="input" value={newArticle.title} onChange={(e) => setNewArticle((a) => ({ ...a, title: e.target.value }))} placeholder="e.g. API Authentication Pattern" />
+                </label>
+                <div className="card-grid-2" style={{ gap: 12 }}>
+                  <label className="field">
+                    <span className="field-label">Category</span>
+                    <select className="select" value={newArticle.category} onChange={(e) => setNewArticle((a) => ({ ...a, category: e.target.value }))}>
+                      {['Architecture', 'Database', 'Configuration', 'Security', 'Testing', 'API', 'General'].map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span className="field-label">Tags <span className="subtle">(comma-separated)</span></span>
+                    <input className="input" value={newArticle.tags} onChange={(e) => setNewArticle((a) => ({ ...a, tags: e.target.value }))} placeholder="auth, api, security" />
+                  </label>
+                </div>
+                <label className="field">
+                  <span className="field-label">Content <span style={{ color: 'var(--danger)' }}>*</span></span>
+                  <textarea className="textarea" rows={4} value={newArticle.content} onChange={(e) => setNewArticle((a) => ({ ...a, content: e.target.value }))} placeholder="Describe the knowledge to record…" />
+                </label>
+                <div className="row" style={{ gap: 8 }}>
+                  <button className="btn btn-primary btn-sm" onClick={saveNewArticle} disabled={!newArticle.title.trim() || !newArticle.content.trim()}>Save Article</button>
+                  <button className="btn btn-sm" onClick={() => setCreatingArticle(false)}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="card-grid-sidebar">
             <div className="stack" style={{ gap: 8 }}>

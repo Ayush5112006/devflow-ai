@@ -18,8 +18,8 @@ export function RepositoriesPage() {
       .then(({ investigations: invs }) => {
         setInvestigations(invs);
         const first = invs[0];
-        if (first) {
-          return api.git(first.id).then(({ git }) => {
+        if (first && first.id) {
+          return api.git(first.id as string).then(({ git }) => {
             setGitInfo(git);
             setLoading(false);
           });
