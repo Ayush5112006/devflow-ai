@@ -55,16 +55,26 @@ export function JudgeModePage() {
   return (
     <div className="page-content stack" style={{ gap: 24 }}>
       {/* Banner */}
-      <div style={{ padding: '24px 28px', background: 'linear-gradient(135deg, rgba(183,243,107,.10), rgba(183,243,107,.02))', border: '1px solid rgba(183,243,107,.28)', borderRadius: 16 }}>
-        <p className="eyebrow">Hackathon Demo</p>
-        <h1 style={{ margin: '8px 0', fontSize: 'clamp(26px, 4vw, 42px)', fontWeight: 900, color: 'var(--ink)', letterSpacing: '-.04em', lineHeight: 1 }}>
-          <span style={{ color: 'var(--accent)' }}>ONE BUG.</span><br />
-          COMPLETE ENGINEERING LIFECYCLE.
-        </h1>
-        <p style={{ margin: '12px 0 0', fontSize: 14, color: 'var(--muted)', maxWidth: '60ch', lineHeight: 1.7 }}>
-          FixFlow coordinates specialized AI agents to take a software issue from report to verified production fix.
-          No fake data. No fabricated results. Every number comes from real agent execution.
-        </p>
+      <div className="banner banner-accent" style={{ padding: '24px 28px', borderRadius: 16 }}>
+        <div>
+          <p className="eyebrow">Hackathon Demo</p>
+          <h1 style={{ margin: '8px 0', fontSize: 'clamp(22px, 4vw, 38px)', fontWeight: 900, color: 'var(--ink)', letterSpacing: '-.04em', lineHeight: 1.1 }}>
+            <span style={{ color: 'var(--accent-text)' }}>ONE BUG.</span> COMPLETE ENGINEERING LIFECYCLE.
+          </h1>
+          <p style={{ margin: '10px 0 0', fontSize: 13, color: 'var(--muted)', maxWidth: '64ch', lineHeight: 1.7 }}>
+            FixFlow coordinates specialized AI agents to take a software issue from report to verified production fix —
+            investigation, root cause, change plan, implementation, testing, review, and report.
+            No fake data. No fabricated results. Every number comes from real agent execution.
+          </p>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+          <span className="badge badge-live" style={{ alignSelf: 'flex-end' }}>LIVE PIPELINE</span>
+          {completed.length > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--success)', fontFamily: 'var(--mono)' }}>
+              {completed.length} completed run{completed.length !== 1 ? 's' : ''} this session
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}

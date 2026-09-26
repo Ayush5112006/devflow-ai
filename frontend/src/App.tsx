@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { NewInvestigationPage } from './pages/NewInvestigationPage.js';
@@ -23,6 +23,8 @@ import { AnalyticsPage } from './pages/AnalyticsPage.js';
 import { JudgeModePage } from './pages/JudgeModePage.js';
 import { IntegrationsPage } from './pages/IntegrationsPage.js';
 import { DependenciesPage } from './pages/DependenciesPage.js';
+import { PerformancePage } from './pages/PerformancePage.js';
+import { RepositoriesPage } from './pages/RepositoriesPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
 import { CommandPalette } from './components/CommandPalette.js';
@@ -58,6 +60,7 @@ const NAV_SECTIONS = [
   {
     label: 'Delivery',
     items: [
+      { to: '/repositories', icon: '⊟', label: 'Repositories' },
       { to: '/git', icon: '⑂', label: 'Git' },
       { to: '/pull-requests', icon: '⊕', label: 'Pull Requests' },
       { to: '/releases', icon: '◬', label: 'Releases' },
@@ -74,6 +77,7 @@ const NAV_SECTIONS = [
     label: 'System',
     items: [
       { to: '/integrations', icon: '⌥', label: 'Integrations' },
+      { to: '/performance', icon: '◈', label: 'Performance' },
       { to: '/judge', icon: '◎', label: 'Judge Mode' },
       { to: '/metrics', icon: '◐', label: 'Metrics' },
       { to: '/settings', icon: '⚙', label: 'Settings' },
@@ -95,11 +99,13 @@ const PAGE_TITLES: Record<string, string> = {
   '/security': 'Security Review',
   '/test-center': 'Test Center',
   '/git': 'Git Center',
+  '/repositories': 'Repositories',
   '/pull-requests': 'Pull Requests',
   '/releases': 'Releases',
   '/knowledge': 'Knowledge Base',
   '/reports': 'Reports',
   '/metrics': 'Metrics',
+  '/performance': 'Performance',
   '/judge': 'Judge Mode',
   '/settings': 'Settings',
   '/integrations': 'Integrations',
@@ -128,7 +134,37 @@ function SideNavLink({ to, icon, label, exact }: { to: string; icon: string; lab
   );
 }
 
+type HealthState = 'checking' | 'ok' | 'error';
+
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [health, setHealth] = useState<HealthState>('checking');
+  const [uptime, setUptime] = useState<number | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    async function check() {
+      try {
+        const result = await fetch('/api/health').then((r) => r.ok ? r.json() : null).catch(() => null);
+        if (result && result.status === 'ok') {
+          setHealth('ok');
+          setUptime(result.uptime ?? null);
+        } else {
+          setHealth('error');
+        }
+      } catch {
+        setHealth('error');
+      }
+    }
+    check();
+    intervalRef.current = setInterval(check, 30_000);
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, []);
+
+  const dotClass = health === 'ok' ? '' : health === 'error' ? 'error' : 'warn';
+  const statusText = health === 'checking' ? 'Connecting…'
+    : health === 'ok' ? `Backend connected${uptime != null ? ` · ${Math.floor(uptime / 60)}m uptime` : ''}`
+    : 'Backend offline';
+
   return (
     <>
       {open && <div className="sidebar-overlay" onClick={onClose} aria-hidden="true" />}
@@ -151,9 +187,9 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className="sidebar-status">
-            <span className="sidebar-status-dot" />
-            <span>Backend connected</span>
+          <div className="sidebar-status" title={statusText}>
+            <span className={`sidebar-status-dot ${dotClass}`} />
+            <span style={{ fontSize: 10 }}>{statusText}</span>
           </div>
           <span className="sidenav-version">FixFlow AI v2.0</span>
         </div>
@@ -247,6 +283,8 @@ export function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/integrations" element={<IntegrationsPage />} />
               <Route path="/dependencies" element={<DependenciesPage />} />
+              <Route path="/performance" element={<PerformancePage />} />
+              <Route path="/repositories" element={<RepositoriesPage />} />
               <Route
                 path="*"
                 element={

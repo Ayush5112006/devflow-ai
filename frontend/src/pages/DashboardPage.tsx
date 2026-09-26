@@ -103,7 +103,7 @@ export function DashboardPage() {
         <StatusItem
           label="Completed"
           value={completedInvs.length}
-          color={completedInvs.length > 0 ? 'var(--accent)' : 'var(--subtle)'}
+          color={completedInvs.length > 0 ? 'var(--success)' : 'var(--subtle)'}
           href="/reports"
         />
         <StatusItem
@@ -115,7 +115,7 @@ export function DashboardPage() {
           <StatusItem
             label="Median fix time"
             value={`${(obs.medianTotalMs / 1000).toFixed(1)}s`}
-            color="var(--accent)"
+            color="var(--accent-text)"
             href="/analytics"
           />
         )}
@@ -323,8 +323,8 @@ function StatusItem({ label, value, color, href, urgent }: {
 }) {
   const content = (
     <div className={`status-item ${urgent ? 'status-item-urgent' : ''}`}>
-      <span className="status-value" style={{ color }}>{value}</span>
-      <span className="status-label">{label}</span>
+      <span className="status-item-value" style={{ color }}>{value}</span>
+      <span className="status-item-label">{label}</span>
     </div>
   );
   return href ? <Link to={href} style={{ textDecoration: 'none' }}>{content}</Link> : content;

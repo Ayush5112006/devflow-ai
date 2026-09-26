@@ -155,6 +155,16 @@ export function IssuesPage() {
 
   return (
     <div className="page-content stack" style={{ gap: 22 }}>
+      {/* DEMO notice */}
+      <div className="banner banner-warn" style={{ padding: '10px 14px' }}>
+        <div className="row" style={{ gap: 10 }}>
+          <span className="demo-notice">DEMO</span>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--muted)' }}>
+            Issues shown are from the InsightBoard demo project. In production, issues would be imported from your issue tracker or created from investigation findings.
+          </p>
+        </div>
+      </div>
+
       {/* Header */}
       <div className="spread">
         <div>
@@ -164,6 +174,7 @@ export function IssuesPage() {
             {criticalCount > 0 && (
               <Badge variant="danger" dot>{criticalCount} critical</Badge>
             )}
+            <span className="demo-notice">DEMO DATA</span>
           </div>
           <p className="muted" style={{ margin: '6px 0 0', fontSize: 13 }}>
             Track, triage and investigate software issues from report to resolution.

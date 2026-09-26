@@ -767,3 +767,189 @@ p { margin: 0; }
     transition-duration: .01ms !important;
   }
 }
+
+/* ─────────────────────────────────────────
+   STATUS BAR (dashboard)
+───────────────────────────────────────── */
+.status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 16px;
+  border-radius: var(--r-md);
+  flex: 1;
+  min-width: 100px;
+  text-decoration: none;
+  transition: 120ms ease;
+}
+.status-item:hover { background: rgba(255,255,255,.04); }
+.status-item-urgent { background: rgba(245,158,11,.07); }
+.status-item-value { font-size: 20px; font-weight: 700; letter-spacing: -.025em; }
+.status-item-label { font-size: 11px; color: var(--subtle); text-transform: uppercase; letter-spacing: .06em; }
+
+/* ─────────────────────────────────────────
+   QUICKNAV GRID (dashboard)
+───────────────────────────────────────── */
+.quicknav-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quicknav-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  text-decoration: none;
+  transition: 140ms ease;
+}
+.quicknav-card:hover {
+  border-color: var(--line-strong);
+  background: rgba(255,255,255,.04);
+  transform: translateY(-1px);
+}
+
+.quicknav-icon {
+  font-size: 18px;
+  flex: none;
+  color: var(--qn-color, var(--accent-text));
+  width: 28px;
+  text-align: center;
+}
+.quicknav-label { font-size: 13px; font-weight: 600; color: var(--ink); margin: 0; }
+.quicknav-desc { font-size: 11px; color: var(--subtle); margin: 2px 0 0; }
+
+@media (max-width: 900px) {
+  .quicknav-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .quicknav-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .status-item-value { font-size: 17px; }
+}
+
+/* ─────────────────────────────────────────
+   ISSUE ROW & LIFECYCLE
+───────────────────────────────────────── */
+.issue-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: 120ms ease;
+}
+.issue-row:hover { background: rgba(255,255,255,.025); }
+
+.issue-status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.issue-lifecycle {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+}
+.issue-lifecycle-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 52px;
+  position: relative;
+}
+.issue-lifecycle-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  width: 100%;
+  height: 1px;
+  background: var(--line);
+  z-index: 0;
+}
+.issue-lifecycle-dot {
+  position: relative;
+  z-index: 1;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--panel-sunken);
+  border: 2px solid var(--line);
+  transition: 160ms ease;
+}
+.issue-lifecycle-dot.done {
+  border-color: transparent;
+}
+.issue-lifecycle-label {
+  font-size: 9px;
+  color: var(--subtle);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ─────────────────────────────────────────
+   TIMELINE DOT VARIANTS (IncidentsPage)
+───────────────────────────────────────── */
+.timeline-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  border-left: 2px solid var(--line);
+  margin-left: 8px;
+  padding-left: 14px;
+}
+.timeline-item:last-child { border-left-color: transparent; }
+.timeline-dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  background: var(--canvas);
+  margin-left: -22px;
+  margin-top: 3px;
+}
+.timeline-dot-success { background: var(--success); border-color: var(--success); }
+.timeline-dot-error { background: var(--danger); border-color: var(--danger); }
+.timeline-dot-warn { background: var(--warn); border-color: var(--warn); }
+.timeline-dot-info { background: var(--info); border-color: var(--info); }
+.timeline-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--subtle);
+  flex: none;
+  min-width: 36px;
+}
+.timeline-event {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
