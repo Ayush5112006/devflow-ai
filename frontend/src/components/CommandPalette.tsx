@@ -49,6 +49,7 @@ export function CommandPalette({ open, onClose, extraActions = [] }: Props) {
     // --- Operations ---
     { id: 'incidents', label: 'Incidents', description: 'Incident management and postmortems', icon: '⚡', action: () => { navigate('/incidents'); onClose(); } },
     { id: 'monitoring', label: 'Monitoring', description: 'Observability and health checks', icon: '◉', action: () => { navigate('/monitoring'); onClose(); } },
+    { id: 'postmortems', label: 'Postmortems', description: 'Incident analysis and corrective actions', icon: '◧', action: () => { navigate('/postmortems'); onClose(); } },
     // --- Knowledge ---
     { id: 'knowledge', label: 'Knowledge Base', description: 'Articles and AI project memory', icon: '▤', action: () => { navigate('/knowledge'); onClose(); } },
     { id: 'reports', label: 'Reports', description: 'Investigation reports', icon: '⊞', action: () => { navigate('/reports'); onClose(); } },
