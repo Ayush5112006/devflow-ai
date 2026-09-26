@@ -47,184 +47,269 @@ export function DashboardPage() {
 
   if (loading) return <LoadingSpinner message="Loading FixFlow AI…" />;
 
+  const activeInvs = investigations.filter((i) => !['completed', 'failed'].includes(i.status));
+  const pendingApprovals = investigations.filter((i) => i.status === 'awaiting_approval');
+  const completedInvs = investigations.filter((i) => i.status === 'completed');
+  const obs = pipeline?.observed;
+
   return (
     <div className="dashboard">
       {error && <div className="alert" role="alert"><span>{error}</span></div>}
 
-      {pipeline && (
-        <div className="stats-row" style={{ marginTop: 0, marginBottom: -22 }}>
-          <Stat label="parallel agents" value={pipeline.parallelAgentCount} />
-          <Stat label="manual steps" value={pipeline.humanGateCount} />
-          <Stat label="workflow stages" value={pipeline.stages.length} />
-          {pipeline.observed && (
-            <Stat label="median run" value={`${(pipeline.observed.medianTotalMs / 1000).toFixed(1)}s`} />
-          )}
-        </div>
-      )}
-
-      {/* Hero */}
-      <div className="dashboard-hero">
+      {/* Hero — Command Center */}
+      <div className="command-center-hero">
         <div>
-          <p className="eyebrow">Agentic developer workflow</p>
-          <h1 className="dashboard-title">From production bug to <span>verified fix.</span></h1>
+          <p className="eyebrow">AI Software Engineering OS</p>
+          <h1 className="dashboard-title">
+            From <span>production bug</span><br />to verified fix.
+          </h1>
           <p className="dashboard-subtitle">
-            FixFlow coordinates specialized AI agents to investigate software bugs in parallel, identify
-            evidence-backed root causes, propose the smallest safe change, verify the fix, and check for regressions.
+            FixFlow coordinates specialized AI agents to investigate, fix, test and document software bugs in parallel.
+            One connected workflow from incident to postmortem.
           </p>
           <div className="workflow-steps">
-            <div className="workflow-step">
-              <span className="workflow-num">01</span>
-              <div>
-                <p className="workflow-step-title">Investigate</p>
-                <p className="workflow-step-desc">Parallel agents + evidence</p>
-              </div>
-            </div>
-            <span className="workflow-arrow">→</span>
-            <div className="workflow-step">
-              <span className="workflow-num">02</span>
-              <div>
-                <p className="workflow-step-title">Fix</p>
-                <p className="workflow-step-desc">Minimal change + human approval</p>
-              </div>
-            </div>
-            <span className="workflow-arrow">→</span>
-            <div className="workflow-step">
-              <span className="workflow-num">03</span>
-              <div>
-                <p className="workflow-step-title">Verify</p>
-                <p className="workflow-step-desc">Tests + regression + report</p>
-              </div>
-            </div>
+            {['Investigate', 'Fix', 'Test', 'Review', 'Release'].map((s, i) => (
+              <React.Fragment key={s}>
+                <div className="workflow-step">
+                  <span className="workflow-num">0{i + 1}</span>
+                  <span className="workflow-step-title">{s}</span>
+                </div>
+                {i < 4 && <span className="workflow-arrow">→</span>}
+              </React.Fragment>
+            ))}
           </div>
         </div>
         <div className="hero-ctas">
           <Link to="/new" className="hero-action">+ Start investigation</Link>
-          <Link to="/" className="hero-action-secondary">View demo ↓</Link>
+          <Link to="/judge" className="hero-action-secondary">Judge Mode →</Link>
         </div>
       </div>
 
-      {/* Demo bugs */}
-      <section>
-        <div className="section-heading"><h2>Start with a known failure</h2><p>Curated scenarios from InsightBoard</p></div>
-        <div className="scenario-grid">
-          {demoBugs.map((bug) => (
-            <div key={bug.id} className="scenario-card">
-              <div className="scenario-meta">
-                <span>{bug.id}</span>
-                {severityBadge(bug.severity)}
-              </div>
-              <p className="scenario-title">{bug.title}</p>
-              <p className="scenario-description">{bug.oneLine}</p>
-              <button
-                onClick={() => launchDemo(bug.id)}
-                disabled={launching !== null}
-                className="scenario-button"
-              >
-                {launching === bug.id ? 'Launching…' : 'Investigate with FixFlow'}
-              </button>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* Status Bar */}
+      <div className="status-bar">
+        <StatusItem
+          label="Active investigations"
+          value={activeInvs.length}
+          color={activeInvs.length > 0 ? 'var(--info)' : 'var(--subtle)'}
+          href="/investigations"
+        />
+        <StatusItem
+          label="Pending approvals"
+          value={pendingApprovals.length}
+          color={pendingApprovals.length > 0 ? 'var(--warn)' : 'var(--subtle)'}
+          href="/investigations"
+          urgent={pendingApprovals.length > 0}
+        />
+        <StatusItem
+          label="Completed"
+          value={completedInvs.length}
+          color={completedInvs.length > 0 ? 'var(--success)' : 'var(--subtle)'}
+          href="/reports"
+        />
+        <StatusItem
+          label="Parallel agents"
+          value={pipeline?.parallelAgentCount ?? '—'}
+          color="var(--muted)"
+        />
+        {obs && (
+          <StatusItem
+            label="Median fix time"
+            value={`${(obs.medianTotalMs / 1000).toFixed(1)}s`}
+            color="var(--accent-text)"
+            href="/analytics"
+          />
+        )}
+        <StatusItem
+          label="Workflow stages"
+          value={pipeline?.stages?.length ?? '—'}
+          color="var(--muted)"
+        />
+      </div>
 
-      {/* Workflow comparison — numbers from the live pipeline endpoint */}
-      <section>
-        <div className="section-heading">
-          <h2>Workflow comparison</h2>
-          <p>FixFlow stages come from the running pipeline</p>
-        </div>
-        <div className="card-grid-2">
-          <Card title="Traditional manual workflow">
-            <ol className="list-num">
-              {['Receive bug report', 'Gather logs manually', 'Context switch across files',
-                'Form a hypothesis', 'Manually trace call paths', 'Write a fix',
-                'Run tests manually', 'Document changes', 'Hope for no regression'].map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ol>
-            <p className="subtle" style={{ margin: '14px 0 0', paddingTop: 12, borderTop: '1px solid var(--line)', fontSize: 12 }}>
-              Duration not measured — no baseline is recorded for this workflow.
+      {/* Pending approvals alert */}
+      {pendingApprovals.length > 0 && (
+        <div className="banner banner-warn">
+          <div>
+            <p className="banner-title" style={{ color: 'var(--warn)' }}>
+              ⏸ {pendingApprovals.length} investigation{pendingApprovals.length > 1 ? 's' : ''} awaiting your approval
             </p>
-          </Card>
-          <Card title="FixFlow AI workflow">
-            {pipeline ? (
-              <>
-                <ol className="list-num">
-                  {pipeline.stages.map((s) => (
-                    <li key={s.id} style={s.requiresHuman ? { color: 'var(--warn)', fontWeight: 600 } : undefined}>
-                      {s.requiresHuman ? '⏸ ' : ''}{s.label}
-                      {s.requiresHuman && <span className="subtle" style={{ fontWeight: 400 }}> — human decision</span>}
-                    </li>
-                  ))}
-                </ol>
-                <p style={{ margin: '14px 0 0', paddingTop: 12, borderTop: '1px solid var(--line)', color: 'var(--accent)', fontSize: 12 }}>
-                  {pipeline.parallelAgentCount} parallel agents · {pipeline.humanGateCount} manual step
-                  {pipeline.humanGateCount === 1 ? '' : 's'} ({pipeline.humanGateStages.join(', ')})
-                </p>
-              </>
-            ) : (
-              <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-                Stage list unavailable — the backend did not report it.
-              </p>
-            )}
-          </Card>
+            <p className="banner-text">
+              {pendingApprovals.map((i: any) => i.bug?.title).join(', ')}
+            </p>
+          </div>
+          {pendingApprovals[0] && (
+            <Link to={`/investigations/${pendingApprovals[0].id}`} className="btn btn-warn btn-sm" style={{ flex: 'none' }}>
+              Review plan →
+            </Link>
+          )}
         </div>
-      </section>
+      )}
 
-      {/* Live stats from completed runs (only shown when there is real data) */}
-      {pipeline?.observed && (
+      {/* Main grid */}
+      <div className="card-grid-2">
+        {/* Demo scenarios */}
         <section>
           <div className="section-heading">
-            <h2>Measured performance</h2>
-            <p>{pipeline.observed.sampleSize} completed run{pipeline.observed.sampleSize !== 1 ? 's' : ''} in this session</p>
+            <h2>Demo scenarios</h2>
+            <p>Curated bugs with real agent execution</p>
           </div>
-          <div className="metric-grid">
-            {[
-              { label: 'Median total', value: `${(pipeline.observed.medianTotalMs / 1000).toFixed(1)}s` },
-              { label: 'Files inspected', value: pipeline.observed.medianFilesInspected },
-              { label: 'Hypotheses', value: pipeline.observed.medianHypothesesGenerated },
-              { label: 'Agents used', value: pipeline.observed.medianAgentsUsed },
-            ].map((m) => (
-              <div key={m.label} className="metric">
-                <p className="metric-value" style={{ color: 'var(--accent)' }}>{m.value}</p>
-                <p className="metric-label">{m.label}</p>
+          <div className="stack" style={{ gap: 10 }}>
+            {demoBugs.map((bug) => (
+              <div key={bug.id} className="scenario-card" style={{ minHeight: 'auto', padding: '14px 16px' }}>
+                <div className="spread">
+                  <div className="row" style={{ gap: 8 }}>
+                    <span className="chip mono" style={{ fontSize: 10 }}>{bug.id}</span>
+                    {severityBadge(bug.severity)}
+                  </div>
+                  <button
+                    onClick={() => launchDemo(bug.id)}
+                    disabled={launching !== null}
+                    className="btn btn-sm btn-primary"
+                    style={{ flex: 'none' }}
+                  >
+                    {launching === bug.id ? 'Launching…' : 'Investigate →'}
+                  </button>
+                </div>
+                <p className="scenario-title" style={{ fontSize: 13, margin: '8px 0 4px' }}>{bug.title}</p>
+                <p className="scenario-description" style={{ fontSize: 12, margin: 0 }}>{bug.oneLine}</p>
               </div>
             ))}
           </div>
         </section>
-      )}
 
-      {/* Recent investigations */}
-      {investigations.length > 0 && (
+        {/* Recent investigations + quick links */}
         <section>
           <div className="section-heading">
             <h2>Recent investigations</h2>
-            <p>Most recent first</p>
+            <Link to="/investigations" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>View all →</Link>
           </div>
-          <div className="panel" style={{ overflow: 'hidden' }}>
-            {investigations.slice(0, 6).map((inv: any) => (
-              <Link
-                key={inv.id}
-                to={`/investigations/${inv.id}`}
-                className="spread"
-                style={{ padding: '13px 16px', textDecoration: 'none', borderBottom: '1px solid var(--line)' }}
-              >
-                <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span className="chip mono">{inv.id?.slice(0, 10)}</span>
-                  <span style={{ fontSize: 13.5, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {inv.bug?.title}
-                  </span>
-                </div>
-                <div className="row" style={{ gap: 6, flex: 'none' }}>
-                  {severityBadge(inv.bug?.severity)}
-                  <Badge
-                    variant={inv.status === 'completed' ? 'success' : inv.status === 'failed' ? 'danger' : 'info'}
-                    dot
-                  >
-                    {(inv.status ?? '').replace(/_/g, ' ')}
-                  </Badge>
-                </div>
-              </Link>
+          {investigations.length > 0 ? (
+            <div className="panel" style={{ overflow: 'hidden' }}>
+              {investigations.slice(0, 6).map((inv: any, i: number) => (
+                <Link
+                  key={inv.id}
+                  to={`/investigations/${inv.id}`}
+                  className="spread"
+                  style={{
+                    padding: '11px 14px', textDecoration: 'none',
+                    borderBottom: i < 5 ? '1px solid var(--line)' : undefined,
+                    background: inv.status === 'awaiting_approval' ? 'rgba(251,191,36,.04)' : undefined,
+                  }}
+                >
+                  <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span className="chip mono" style={{ fontSize: 10 }}>{inv.id?.slice(0, 8)}</span>
+                    <span style={{ fontSize: 12, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {inv.bug?.title}
+                    </span>
+                  </div>
+                  <div className="row" style={{ gap: 6, flex: 'none' }}>
+                    {severityBadge(inv.bug?.severity)}
+                    <Badge
+                      variant={inv.status === 'completed' ? 'success' : inv.status === 'failed' ? 'danger' : inv.status === 'awaiting_approval' ? 'warn' : 'info'}
+                      dot
+                    >
+                      {(inv.status ?? '').replace(/_/g, ' ')}
+                    </Badge>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <div className="panel">
+              <div className="empty">
+                <p className="empty-title">No investigations yet</p>
+                <p className="empty-text">Start with a demo scenario above or create a new investigation.</p>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {/* Quick nav grid */}
+      <section>
+        <div className="section-heading"><h2>Engineering workflows</h2><p>Navigate to any part of the platform</p></div>
+        <div className="quicknav-grid">
+          {[
+            { to: '/issues', icon: '◎', label: 'Issues', desc: 'Track and triage bugs', color: 'var(--danger)' },
+            { to: '/debugging', icon: '⊘', label: 'Debugging', desc: 'Logs, runtime, timeline', color: 'var(--info)' },
+            { to: '/code-review', icon: '◑', label: 'Code Review', desc: 'AI-powered review', color: 'var(--accent)' },
+            { to: '/security', icon: '◻', label: 'Security', desc: 'Vulnerabilities & CVEs', color: '#f472b6' },
+            { to: '/test-center', icon: '✓', label: 'Tests', desc: 'Suites & coverage', color: 'var(--warn)' },
+            { to: '/git', icon: '⑂', label: 'Git', desc: 'Branches & commits', color: 'var(--info)' },
+            { to: '/pull-requests', icon: '⊕', label: 'Pull Requests', desc: 'Generate & review PRs', color: 'var(--accent)' },
+            { to: '/incidents', icon: '⚡', label: 'Incidents', desc: 'Detect & resolve', color: 'var(--danger)' },
+            { to: '/releases', icon: '◈', label: 'Releases', desc: 'Readiness & flags', color: '#a78bfa' },
+            { to: '/knowledge', icon: '◧', label: 'Knowledge', desc: 'Articles & AI memory', color: 'var(--warn)' },
+            { to: '/analytics', icon: '◉', label: 'Analytics', desc: 'Metrics & audit log', color: 'var(--accent)' },
+            { to: '/judge', icon: '◬', label: 'Judge Mode', desc: 'Full lifecycle demo', color: 'var(--accent)' },
+          ].map((item) => (
+            <Link key={item.to} to={item.to} className="quicknav-card" style={{ '--qn-color': item.color } as any}>
+              <span className="quicknav-icon">{item.icon}</span>
+              <div>
+                <p className="quicknav-label">{item.label}</p>
+                <p className="quicknav-desc">{item.desc}</p>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      {/* Pipeline comparison (only shown when pipeline data available) */}
+      {pipeline && (
+        <section>
+          <div className="section-heading">
+            <h2>Workflow comparison</h2>
+            <p>Live pipeline data — not estimated</p>
+          </div>
+          <div className="card-grid-2">
+            <Card title="Traditional manual workflow">
+              <ol className="list-num">
+                {['Receive bug report', 'Gather logs manually', 'Context switch across files',
+                  'Form hypothesis', 'Manually trace call paths', 'Write fix',
+                  'Run tests manually', 'Document changes', 'Hope for no regression'].map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ol>
+              <p className="subtle" style={{ margin: '12px 0 0', paddingTop: 10, borderTop: '1px solid var(--line)', fontSize: 11 }}>
+                Duration not measured — no baseline recorded for this workflow.
+              </p>
+            </Card>
+            <Card title="FixFlow AI workflow">
+              <ol className="list-num">
+                {pipeline.stages.map((s) => (
+                  <li key={s.id} style={s.requiresHuman ? { color: 'var(--warn)', fontWeight: 600 } : undefined}>
+                    {s.requiresHuman ? '⏸ ' : ''}{s.label}
+                    {s.requiresHuman && <span className="subtle" style={{ fontWeight: 400 }}> — human decision</span>}
+                  </li>
+                ))}
+              </ol>
+              <p style={{ margin: '12px 0 0', paddingTop: 10, borderTop: '1px solid var(--line)', color: 'var(--accent)', fontSize: 11 }}>
+                {pipeline.parallelAgentCount} parallel agents · {pipeline.humanGateCount} manual gate
+                {obs ? ` · ${(obs.medianTotalMs / 1000).toFixed(1)}s median (MEASURED)` : ''}
+              </p>
+            </Card>
+          </div>
+        </section>
+      )}
+
+      {/* Measured performance (only shown with real data) */}
+      {obs && (
+        <section>
+          <div className="section-heading">
+            <h2>Measured performance</h2>
+            <p>{obs.sampleSize} completed run{obs.sampleSize !== 1 ? 's' : ''} — all values real</p>
+          </div>
+          <div className="metric-grid">
+            {[
+              { label: 'Median total', value: `${(obs.medianTotalMs / 1000).toFixed(1)}s`, color: 'var(--accent)' },
+              { label: 'Files inspected', value: obs.medianFilesInspected, color: 'var(--info)' },
+              { label: 'Hypotheses', value: obs.medianHypothesesGenerated, color: 'var(--warn)' },
+              { label: 'Agents used', value: obs.medianAgentsUsed, color: 'var(--muted)' },
+            ].map((m) => (
+              <div key={m.label} className="metric">
+                <p className="metric-value" style={{ color: m.color }}>{m.value}</p>
+                <p className="metric-label">{m.label}</p>
+              </div>
             ))}
           </div>
         </section>
@@ -233,11 +318,14 @@ export function DashboardPage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="stat">
-      <span className="stat-value">{value}</span>
-      <span className="stat-label">{label}</span>
+function StatusItem({ label, value, color, href, urgent }: {
+  label: string; value: string | number; color: string; href?: string; urgent?: boolean;
+}) {
+  const content = (
+    <div className={`status-item ${urgent ? 'status-item-urgent' : ''}`}>
+      <span className="status-item-value" style={{ color }}>{value}</span>
+      <span className="status-item-label">{label}</span>
     </div>
   );
+  return href ? <Link to={href} style={{ textDecoration: 'none' }}>{content}</Link> : content;
 }

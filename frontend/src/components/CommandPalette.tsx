@@ -23,9 +23,40 @@ export function CommandPalette({ open, onClose, extraActions = [] }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const baseActions: PaletteAction[] = [
-    { id: 'dashboard', label: 'Open Dashboard', icon: '⊞', action: () => { navigate('/'); onClose(); } },
-    { id: 'repositories', label: 'Open Repositories', description: 'Browse and manage code repositories, issues & PRs', icon: '🗄️', action: () => { navigate('/repositories'); onClose(); } },
-    { id: 'new', label: 'New Investigation', description: 'Start investigating a bug', icon: '+', action: () => { navigate('/new'); onClose(); } },
+    // --- Actions ---
+    { id: 'new-investigation', label: 'New Investigation', description: 'Start investigating a bug with AI agents', icon: '+', shortcut: 'N', action: () => { navigate('/new'); onClose(); } },
+    { id: 'judge', label: 'Open Judge Mode', description: 'Full 26-step lifecycle demo', icon: '◬', action: () => { navigate('/judge'); onClose(); } },
+    // --- Workspace ---
+    { id: 'dashboard', label: 'Dashboard', description: 'Engineering command center', icon: '▦', action: () => { navigate('/'); onClose(); } },
+    { id: 'projects', label: 'Projects', description: 'Project hub', icon: '◫', action: () => { navigate('/projects'); onClose(); } },
+    { id: 'analytics', label: 'Analytics', description: 'Metrics, DORA, audit log', icon: '◉', action: () => { navigate('/analytics'); onClose(); } },
+    // --- Engineering ---
+    { id: 'issues', label: 'Issues', description: 'Track and triage bugs', icon: '◎', action: () => { navigate('/issues'); onClose(); } },
+    { id: 'investigations', label: 'Investigations', description: 'View all investigations', icon: '◐', action: () => { navigate('/investigations'); onClose(); } },
+    { id: 'debugging', label: 'Debugging', description: 'Log analysis and runtime debug', icon: '⊘', action: () => { navigate('/debugging'); onClose(); } },
+    // --- Quality ---
+    { id: 'code-intelligence', label: 'Code Intelligence', description: 'Symbol search and explorer', icon: '◑', action: () => { navigate('/code-intelligence'); onClose(); } },
+    { id: 'code-review', label: 'Code Review', description: 'AI-powered code review', icon: '◧', action: () => { navigate('/code-review'); onClose(); } },
+    { id: 'security', label: 'Security Center', description: 'Vulnerability findings', icon: '◻', action: () => { navigate('/security'); onClose(); } },
+    { id: 'test-center', label: 'Test Center', description: 'Test suites and coverage', icon: '✓', action: () => { navigate('/test-center'); onClose(); } },
+    { id: 'dependencies', label: 'Dependencies', description: 'Package health and CVE tracking', icon: '◈', action: () => { navigate('/dependencies'); onClose(); } },
+    { id: 'performance', label: 'Performance', description: 'Latency, API speed, frontend metrics', icon: '⚡', action: () => { navigate('/performance'); onClose(); } },
+    // --- Delivery ---
+    { id: 'repositories', label: 'Repositories', description: 'Repository overview and git data', icon: '⊟', action: () => { navigate('/repositories'); onClose(); } },
+    { id: 'git', label: 'Git Center', description: 'Branches, commits, git info', icon: '⑂', action: () => { navigate('/git'); onClose(); } },
+    { id: 'pull-requests', label: 'Pull Requests', description: 'Generate and review PRs', icon: '⊕', action: () => { navigate('/pull-requests'); onClose(); } },
+    { id: 'releases', label: 'Releases', description: 'Release readiness and flags', icon: '◬', action: () => { navigate('/releases'); onClose(); } },
+    // --- Operations ---
+    { id: 'incidents', label: 'Incidents', description: 'Incident management and postmortems', icon: '⚡', action: () => { navigate('/incidents'); onClose(); } },
+    { id: 'monitoring', label: 'Monitoring', description: 'Observability and health checks', icon: '◉', action: () => { navigate('/monitoring'); onClose(); } },
+    { id: 'postmortems', label: 'Postmortems', description: 'Incident analysis and corrective actions', icon: '◧', action: () => { navigate('/postmortems'); onClose(); } },
+    // --- Knowledge ---
+    { id: 'knowledge', label: 'Knowledge Base', description: 'Articles and AI project memory', icon: '▤', action: () => { navigate('/knowledge'); onClose(); } },
+    { id: 'reports', label: 'Reports', description: 'Investigation reports', icon: '⊞', action: () => { navigate('/reports'); onClose(); } },
+    // --- System ---
+    { id: 'integrations', label: 'Integrations', description: 'Connect to GitHub, Jira, Sentry…', icon: '⌥', action: () => { navigate('/integrations'); onClose(); } },
+    { id: 'metrics', label: 'Metrics', description: 'Pipeline performance metrics', icon: '▦', action: () => { navigate('/metrics'); onClose(); } },
+    { id: 'settings', label: 'Settings', description: 'Platform configuration', icon: '⚙', action: () => { navigate('/settings'); onClose(); } },
   ];
 
   const actions = [...baseActions, ...extraActions];
