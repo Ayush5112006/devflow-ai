@@ -26,6 +26,7 @@ import { DependenciesPage } from './pages/DependenciesPage.js';
 import { PerformancePage } from './pages/PerformancePage.js';
 import { RepositoriesPage } from './pages/RepositoriesPage.js';
 import { MonitoringPage } from './pages/MonitoringPage.js';
+import { PostmortemsPage } from './pages/PostmortemsPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
 import { CommandPalette } from './components/CommandPalette.js';
@@ -71,6 +72,7 @@ const NAV_SECTIONS = [
     items: [
       { to: '/incidents', icon: '⚡', label: 'Incidents' },
       { to: '/monitoring', icon: '◉', label: 'Monitoring' },
+      { to: '/postmortems', icon: '◧', label: 'Postmortems' },
     ],
   },
   {
@@ -101,6 +103,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/new': 'New Investigation',
   '/incidents': 'Incidents',
   '/monitoring': 'Monitoring',
+  '/postmortems': 'Postmortems',
   '/debugging': 'Log Intelligence',
   '/code-intelligence': 'Code Intelligence',
   '/code-review': 'Code Review',
@@ -294,6 +297,7 @@ export function App() {
               <Route path="/performance" element={<PerformancePage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
               <Route path="/monitoring" element={<MonitoringPage />} />
+              <Route path="/postmortems" element={<PostmortemsPage />} />
               <Route
                 path="*"
                 element={
