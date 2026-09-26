@@ -367,7 +367,17 @@ function IssueDetail({ issue, onClose }: { issue: Issue; onClose: () => void }) 
               View investigation →
             </Link>
           ) : (
-            <Link to="/new" className="btn btn-sm btn-primary">Investigate →</Link>
+            <Link
+              to="/new"
+              state={{
+                title: issue.title,
+                description: issue.description,
+                severity: issue.priority,
+              }}
+              className="btn btn-sm btn-primary"
+            >
+              Investigate →
+            </Link>
           )}
           <Link to="/debugging" className="btn btn-sm">Debug</Link>
           <Link to="/code-review" className="btn btn-sm">Review</Link>

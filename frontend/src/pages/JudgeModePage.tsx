@@ -34,6 +34,40 @@ const DEMO_STEPS = [
   { num: 26, label: 'Productivity metrics', done: false, desc: 'Time saved, agents used, manual steps reduced', action: '/analytics' },
 ];
 
+/**
+ * Compute which steps are "done" based on the most advanced investigation status.
+ * Steps 1-6: always available (project is set up, demo scenarios exist).
+ * Steps 7+: depend on whether an investigation has progressed.
+ */
+function computeDoneSteps(investigations: any[]): Set<number> {
+  const done = new Set<number>([1, 2, 3, 4, 5, 6]);
+  if (investigations.length === 0) return done;
+
+  const statusPriority: Record<string, number> = {
+    running: 7,
+    investigation: 8,
+    rootCause: 9,
+    rootcause: 9,
+    changePlan: 11,
+    awaiting_approval: 13,
+    implementing: 15,
+    verification: 16,
+    regression: 18,
+    completed: 26,
+    failed: 7,
+  };
+
+  const best = investigations.reduce((max, inv) => {
+    const priority = statusPriority[inv.status] ?? 0;
+    return priority > max ? priority : max;
+  }, 0);
+
+  for (let i = 1; i <= Math.min(best, 26); i++) {
+    done.add(i);
+  }
+  return done;
+}
+
 export function JudgeModePage() {
   const [activeStep, setActiveStep] = useState<number | null>(null);
   const [investigations, setInvestigations] = useState<any[]>([]);
@@ -49,6 +83,7 @@ export function JudgeModePage() {
 
   const completed = investigations.filter((i) => i.status === 'completed');
   const obs = pipeline?.observed;
+  const doneSteps = computeDoneSteps(investigations);
 
   if (loading) return <LoadingSpinner message="Loading judge mode…" />;
 
@@ -90,50 +125,54 @@ export function JudgeModePage() {
             Click any step to navigate. Steps marked ✓ are available right now from the demo investigation.
             {completed.length === 0 && ' — Start a demo investigation from the Dashboard to see real data.'}
           </p>
-          {DEMO_STEPS.map((step) => (
-            <div
-              key={step.num}
-              className="panel"
-              style={{
-                padding: '12px 16px',
-                borderLeft: `3px solid ${step.done ? 'var(--accent)' : activeStep === step.num ? 'var(--info)' : 'var(--line)'}`,
-                cursor: step.action ? 'pointer' : 'default',
-                background: activeStep === step.num ? 'rgba(96,165,250,.05)' : undefined,
-              }}
-              onClick={() => setActiveStep(activeStep === step.num ? null : step.num)}
-            >
-              <div className="row" style={{ gap: 14 }}>
-                <span style={{
-                  display: 'grid', placeItems: 'center', width: 26, height: 26,
-                  borderRadius: 999, flex: 'none',
-                  background: step.done ? 'var(--accent-soft)' : 'var(--panel-sunken)',
-                  border: `1px solid ${step.done ? 'rgba(183,243,107,.4)' : 'var(--line)'}`,
-                  color: step.done ? 'var(--accent)' : 'var(--subtle)',
-                  fontSize: 11, fontWeight: 700, fontFamily: 'var(--mono)',
-                }}>
-                  {step.done ? '✓' : step.num}
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="row" style={{ gap: 10 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: step.done ? 'var(--ink)' : 'var(--muted)' }}>
-                      {step.label}
-                    </span>
+          {DEMO_STEPS.map((step) => {
+            const isDone = doneSteps.has(step.num);
+            return (
+              <div
+                key={step.num}
+                className="panel"
+                style={{
+                  padding: '12px 16px',
+                  borderLeft: `3px solid ${isDone ? 'var(--accent)' : activeStep === step.num ? 'var(--info)' : 'var(--line)'}`,
+                  cursor: step.action ? 'pointer' : 'default',
+                  background: activeStep === step.num ? 'rgba(96,165,250,.05)' : undefined,
+                }}
+                onClick={() => setActiveStep(activeStep === step.num ? null : step.num)}
+              >
+                <div className="row" style={{ gap: 14 }}>
+                  <span style={{
+                    display: 'grid', placeItems: 'center', width: 26, height: 26,
+                    borderRadius: 999, flex: 'none',
+                    background: isDone ? 'var(--accent-soft)' : 'var(--panel-sunken)',
+                    border: `1px solid ${isDone ? 'rgba(124,92,252,.4)' : 'var(--line)'}`,
+                    color: isDone ? 'var(--accent-text)' : 'var(--subtle)',
+                    fontSize: 11, fontWeight: 700, fontFamily: 'var(--mono)',
+                  }}>
+                    {isDone ? '✓' : step.num}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="row" style={{ gap: 10 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: isDone ? 'var(--ink)' : 'var(--muted)' }}>
+                        {step.label}
+                      </span>
+                      {!isDone && <span style={{ fontSize: 10, color: 'var(--subtle)', fontFamily: 'var(--mono)', letterSpacing: '.06em' }}>PENDING</span>}
+                    </div>
+                    <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--subtle)', lineHeight: 1.5 }}>{step.desc}</p>
                   </div>
-                  <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--subtle)', lineHeight: 1.5 }}>{step.desc}</p>
+                  {step.action && (
+                    <Link
+                      to={step.action}
+                      className="btn btn-sm btn-link"
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ flex: 'none', fontSize: 11 }}
+                    >
+                      Open →
+                    </Link>
+                  )}
                 </div>
-                {step.action && (
-                  <Link
-                    to={step.action}
-                    className="btn btn-sm btn-link"
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ flex: 'none', fontSize: 11 }}
-                  >
-                    Open →
-                  </Link>
-                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

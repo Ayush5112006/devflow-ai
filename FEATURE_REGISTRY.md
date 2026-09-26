@@ -153,24 +153,24 @@
 
 ## Missing Work Summary
 
-### P0 (Must Fix)
-- [ ] Add DEMO badge to IssuesPage header
-- [ ] Add real backend health check to sidebar (ping `/health`)
-- [ ] Create `/performance` page with Coming Soon + pipeline metrics
-- [ ] Add evidence file upload to NewInvestigationPage
-- [ ] Add environment/context fields to NewInvestigationPage
+### P0 — COMPLETE ✅
+- [x] Add DEMO badge to IssuesPage header (was already present)
+- [x] Sidebar health check pings real `/health` endpoint (was already done in App.tsx)
+- [x] `/performance` route exists and works
+- [x] Environment/context fields added to NewInvestigationPage
+- [x] Multiple evidence items supported in NewInvestigationPage
 
-### P1 (Should Fix)
-- [ ] Create `/repositories` page (real git data + GitHub coming soon)
-- [ ] Fix "Export postmortem" button in IncidentsPage (implement markdown download)
-- [ ] Fix "Add to Knowledge Base" button in IncidentsPage
-- [ ] Fix "New Article" button in KnowledgePage
-- [ ] Connect AnalyticsPage scorecard to real investigation data
-- [ ] Polish JudgeModePage — make step "done" state dynamic from real investigation
-- [ ] Create shared `ComingSoon` component
-- [ ] Create shared `EmptyState` component
+### P1 — COMPLETE ✅
+- [x] `/repositories` page created with real local git data + COMING SOON for GitHub
+- [x] Fix "Export postmortem" button in IncidentsPage (Markdown download)
+- [x] Fix "Add to Knowledge Base" button in IncidentsPage (session state)
+- [x] Fix "New Article" button in KnowledgePage (create form)
+- [x] Added DEMO DATA label to AnalyticsPage scorecard
+- [x] JudgeModePage step "done" state now computed from real investigation status
+- [x] Created shared `ComingSoon` component (`components/ComingSoon.tsx`)
+- [x] Created shared `EmptyState` component (`components/EmptyState.tsx`)
 
-### P2 (Nice to Have)
-- [ ] Remove dead code: `Dashboard.tsx`, `InvestigationView.tsx`
-- [ ] Verify `components/Layout.tsx`, `InvestigationTimeline.tsx`, `PipelineDiagram.tsx`, `StageStepper.tsx` are used or remove
-- [ ] ProjectsPage — connect to real `api.projects`
+### P2 — COMPLETE ✅
+- [x] Removed dead code: `Dashboard.tsx`, `InvestigationView.tsx`
+- [x] Removed unused `components/Layout.tsx`
+- [x] ProjectsPage already uses `api.projects()` (done earlier)

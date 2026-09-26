@@ -187,3 +187,19 @@ The browser connects to `GET /investigations/:id/stream` (SSE). The backend emit
 | SSE over WebSocket | Simpler, HTTP-compatible, one-directional (server push) |
 | Parallel agent fan-out | Speed + isolation — one failing agent doesn't block others |
 | TypeScript throughout | Type safety across frontend/backend without code generation |
+
+---
+
+## Changelog — P0/P1 Repair Pass
+
+| Change | File | Impact |
+|--------|------|--------|
+| Export Postmortem (Markdown download) | `IncidentsPage.tsx` | Real browser download |
+| Add to Knowledge Base (session state) | `IncidentsPage.tsx` | Functional button |
+| New Article form | `KnowledgePage.tsx` | Creates articles in session state |
+| DEMO DATA label on Analytics scorecard | `AnalyticsPage.tsx` | Honest data labeling |
+| Dynamic JudgeMode step completion | `JudgeModePage.tsx` | Based on real investigation status |
+| Removed `Dashboard.tsx`, `InvestigationView.tsx` | — | Dead code cleanup |
+| Removed `components/Layout.tsx` | — | Unused file cleanup |
+| Added `components/ComingSoon.tsx` | NEW | Shared coming-soon component |
+| Added `components/EmptyState.tsx` | NEW | Shared empty-state component |

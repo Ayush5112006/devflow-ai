@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useRef, useCallback } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../services/api.js';
 
 type EvidenceKind = 'log' | 'screenshot' | 'http' | 'json' | 'stacktrace' | 'text';
@@ -19,14 +19,26 @@ const EVIDENCE_KIND_LABELS: Record<EvidenceKind, string> = {
   text: 'Other text',
 };
 
+/** Guess the best evidence kind from a file extension. */
+function guessKind(filename: string): EvidenceKind {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  if (['log', 'txt'].includes(ext)) return 'log';
+  if (ext === 'json') return 'json';
+  if (['har'].includes(ext)) return 'http';
+  return 'text';
+}
+
 export function NewInvestigationPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const prefill = (location.state as { title?: string; description?: string; severity?: string } | null) ?? {};
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({
-    title: '',
-    description: '',
-    severity: 'high' as 'critical' | 'high' | 'medium' | 'low',
+    title: prefill.title ?? '',
+    description: prefill.description ?? '',
+    severity: (prefill.severity ?? 'high') as 'critical' | 'high' | 'medium' | 'low',
     expectedBehavior: '',
     actualBehavior: '',
     reproSteps: '',
@@ -41,6 +53,39 @@ export function NewInvestigationPage() {
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([
     { name: 'pasted-log.log', kind: 'log', content: '' },
   ]);
+
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function readFilesAsEvidence(files: FileList | File[]) {
+    const arr = Array.from(files);
+    arr.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const content = (e.target?.result as string) ?? '';
+        setEvidenceItems((prev) => [
+          ...prev,
+          { name: file.name, kind: guessKind(file.name), content },
+        ]);
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files.length > 0) {
+      readFilesAsEvidence(e.dataTransfer.files);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => setDragOver(false), []);
 
   function update(field: string, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -279,6 +324,43 @@ export function NewInvestigationPage() {
             </div>
           </div>
           <div className="panel-body stack">
+            {/* File drop zone */}
+            <div
+              role="button"
+              tabIndex={0}
+              aria-label="Drop evidence files here or click to browse"
+              style={{
+                border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--line-strong)'}`,
+                borderRadius: 10,
+                padding: '18px 24px',
+                textAlign: 'center',
+                background: dragOver ? 'var(--accent-soft2)' : 'var(--panel-sunken)',
+                cursor: 'pointer',
+                transition: 'all 150ms ease',
+              }}
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
+            >
+              <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--ink)', fontWeight: 600 }}>
+                Drop log files / stack traces here
+              </p>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--subtle)' }}>
+                or <span style={{ color: 'var(--accent)', textDecoration: 'underline' }}>browse files</span> · .log, .txt, .json, .har supported · read in browser, not uploaded to any server
+              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".log,.txt,.json,.har,.md"
+                style={{ display: 'none' }}
+                onChange={(e) => { if (e.target.files) readFilesAsEvidence(e.target.files); e.target.value = ''; }}
+                aria-label="Upload evidence files"
+              />
+            </div>
+
             {evidenceItems.map((ev, idx) => (
               <div key={idx} style={{ padding: '14px 16px', background: 'var(--panel-sunken)', borderRadius: 10, border: '1px solid var(--line)' }}>
                 <div className="row" style={{ gap: 10, marginBottom: 10 }}>
