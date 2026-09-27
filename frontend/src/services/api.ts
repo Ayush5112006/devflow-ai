@@ -1,7 +1,10 @@
 import type { Investigation, DemoBug, ProjectTarget, PipelineFacts } from '../types/index.js';
 
-const defaultApiBase = import.meta.env.DEV ? '/api' : 'https://devflow-ai-backend-ten.vercel.app';
-const BASE = (import.meta.env.VITE_API_URL ?? defaultApiBase).replace(/\/$/, '');
+const defaultApiBase = import.meta.env.DEV ? '/api' : 'https://devflow-ai-backend-ten.vercel.app/api';
+const configuredApiBase = (import.meta.env.VITE_API_URL ?? defaultApiBase).replace(/\/$/, '');
+const BASE = configuredApiBase === '/api' || configuredApiBase.endsWith('/api')
+  ? configuredApiBase
+  : `${configuredApiBase}/api`;
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
