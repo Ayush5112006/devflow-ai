@@ -17,11 +17,12 @@ const app = express();
 
 app.use(cors({
   origin: config.corsOrigins.length > 0 ? config.corsOrigins : [
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-      `http://localhost:${config.port}`,
-      `http://127.0.0.1:${config.port}`,
-    ],
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    `http://localhost:${config.port}`,
+    `http://127.0.0.1:${config.port}`,
+    'https://fixflowai.vercel.app',
+  ],
   credentials: true,
 }));
 

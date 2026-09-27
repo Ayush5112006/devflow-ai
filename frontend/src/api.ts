@@ -1,4 +1,5 @@
-const API_BASE = (import.meta.env.VITE_API_URL ?? '/api').replace(/\/$/, '');
+const defaultApiBase = import.meta.env.DEV ? '/api' : 'https://devflow-ai-backend-ten.vercel.app';
+const API_BASE = (import.meta.env.VITE_API_URL ?? defaultApiBase).replace(/\/$/, '');
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

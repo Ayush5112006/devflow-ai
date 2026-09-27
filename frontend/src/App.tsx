@@ -31,6 +31,7 @@ import { PostmortemsPage } from './pages/PostmortemsPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
 import { CommandPalette } from './components/CommandPalette.js';
+import { api } from './api.js';
 
 const NAV_SECTIONS = [
   {
@@ -156,8 +157,8 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   useEffect(() => {
     async function check() {
       try {
-        const result = await fetch('/api/health').then((r) => r.ok ? r.json() : null).catch(() => null);
-        if (result && result.status === 'ok') {
+        const result = await api.health();
+        if (result.status === 'ok') {
           setHealth('ok');
           setUptime(result.uptime ?? null);
         } else {
