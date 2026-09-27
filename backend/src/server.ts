@@ -84,12 +84,13 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error', code: 'internal_error' });
 });
 
-/* ------------------------------------------------------------------ */
-/* Start                                                              */
-/* ------------------------------------------------------------------ */
-
-app.listen(config.port, config.host, () => {
-  log.info(`FixFlow AI backend listening on http://${config.host}:${config.port}`);
-});
-
 export { app };
+
+export default app;
+
+/* Vercel invokes the exported app as a serverless function. */
+if (!process.env.VERCEL) {
+  app.listen(config.port, config.host, () => {
+    log.info(`FixFlow AI backend listening on http://${config.host}:${config.port}`);
+  });
+}
