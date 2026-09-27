@@ -40,13 +40,16 @@ app.use((req, res, next) => {
 /* Routes                                                             */
 /* ------------------------------------------------------------------ */
 
-app.get('/health', (_req, res) => {
+const healthHandler = (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     version: '0.1.0',
     uptime: Math.floor(process.uptime()),
   });
-});
+};
+
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 
 app.use('/api', router);
 app.use('/api', repositoriesRouter);
