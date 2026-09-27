@@ -20,6 +20,10 @@ function num(name: string, fallback: number): number {
 export const config = {
   port: num('PORT', 4000),
   host: process.env.HOST ?? '127.0.0.1',
+  corsOrigins: (process.env.CORS_ORIGIN ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   dataDir: process.env.FIXFLOW_DATA_DIR ?? DATA_DIR,
   workspacesDir: process.env.FIXFLOW_WORKSPACES_DIR ?? WORKSPACES_DIR,
   demoDir: DEMO_DIR,

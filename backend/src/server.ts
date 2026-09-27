@@ -16,12 +16,12 @@ const app = express();
 /* ------------------------------------------------------------------ */
 
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    `http://localhost:${config.port}`,
-    `http://127.0.0.1:${config.port}`,
-  ],
+  origin: config.corsOrigins.length > 0 ? config.corsOrigins : [
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      `http://localhost:${config.port}`,
+      `http://127.0.0.1:${config.port}`,
+    ],
   credentials: true,
 }));
 
