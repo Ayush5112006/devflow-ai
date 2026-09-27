@@ -1,6 +1,7 @@
 import type { Investigation, DemoBug, ProjectTarget, PipelineFacts } from '../types/index.js';
 
-const BASE = '/api';
+const defaultApiBase = import.meta.env.DEV ? '/api' : 'https://devflow-ai-backend-ten.vercel.app';
+const BASE = (import.meta.env.VITE_API_URL ?? defaultApiBase).replace(/\/$/, '');
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
@@ -275,7 +276,7 @@ export const api = {
   health: () => get<{ status: string; version: string; uptime: number }>('/health').catch(() => null),
 
   /* SSE */
-  stream: (id: string) => new EventSource(`/api/investigations/${id}/stream`),
+  stream: (id: string) => new EventSource(`${BASE}/investigations/${id}/stream`),
 
   /* ---------------- Repositories API ---------------- */
   repositories: () => get<{ repositories: RepositoryItem[] }>('/repositories'),
