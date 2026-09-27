@@ -1,456 +1,421 @@
 /**
- * GitHub REST API v3 client.
- *
- * Uses native fetch (Node 18+). The GitHub token is ONLY read from the
- * GITHUB_TOKEN environment variable — it is never stored, returned to the
- * frontend, or logged.
- *
- * All operations are read-only EXCEPT:
- *  - None yet (PR creation is Coming Soon)
- *
- * Rate limiting: GitHub allows 5000 req/hour for authenticated requests.
- * This module does not implement pagination exhaustion to stay within limits.
+ * GitHub Integration Service
+ * 
+ * Provides verified API operations for GitHub when configured with GITHUB_TOKEN.
+ * Never returns fake data. If GITHUB_TOKEN is missing or unauthorized,
+ * reports accurate status and configuration guidelines.
  */
-
-import type {
-  Repository,
-  RepositoryBranch,
-  RepositoryCommit,
-  RepositoryCommitDetail,
-  GitFileEntry,
-  RepositoryIssue,
-  RepositoryPR,
-} from '../types/index.js';
-import { detectLanguage } from '../utils/git.js';
+import { config } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('github-service');
 
-const GITHUB_API = 'https://api.github.com';
-
-/** Returns the configured GitHub token or null if not set. */
-export function getGitHubToken(): string | null {
-  return process.env.GITHUB_TOKEN?.trim() || null;
-}
-
-/** Returns whether GitHub integration is configured. */
-export function isGitHubConfigured(): boolean {
-  return getGitHubToken() !== null;
-}
-
-/** Connection status object returned to the frontend (never includes the token). */
-export interface GitHubStatus {
+export interface GitHubAuthStatus {
   configured: boolean;
-  login: string | null;
+  authenticated: boolean;
+  username: string | null;
   name: string | null;
   avatarUrl: string | null;
-  rateLimitRemaining: number | null;
-  rateLimitReset: string | null;
-  error: string | null;
+  scopes: string[];
+  rateLimit: {
+    limit: number;
+    remaining: number;
+    reset: number;
+  } | null;
+  error?: string;
+  setupInstructions?: string[];
 }
 
-interface FetchOptions {
-  method?: string;
-  body?: unknown;
+export interface GitHubRepositoryItem {
+  id: number;
+  name: string;
+  fullName: string;
+  owner: string;
+  description: string | null;
+  isPrivate: boolean;
+  defaultBranch: string;
+  language: string | null;
+  stars: number;
+  forks: number;
+  openIssuesCount: number;
+  htmlUrl: string;
+  cloneUrl: string;
+  updatedAt: string;
+  pushedAt: string;
 }
 
-async function ghFetch<T>(
-  path: string,
-  opts: FetchOptions = {},
-): Promise<{ data: T | null; status: number; error: string | null }> {
-  const token = getGitHubToken();
-  if (!token) {
-    return { data: null, status: 401, error: 'GitHub token not configured. Set the GITHUB_TOKEN environment variable.' };
-  }
+export interface GitHubIssueItem {
+  id: number;
+  number: number;
+  title: string;
+  body: string | null;
+  state: 'open' | 'closed';
+  author: string;
+  authorAvatar?: string;
+  labels: { name: string; color: string }[];
+  assignees: string[];
+  createdAt: string;
+  updatedAt: string;
+  htmlUrl: string;
+  commentsCount: number;
+}
 
-  const url = path.startsWith('http') ? path : `${GITHUB_API}${path}`;
+export interface GitHubPullRequestItem {
+  id: number;
+  number: number;
+  title: string;
+  body: string | null;
+  state: 'open' | 'closed' | 'merged';
+  author: string;
+  authorAvatar?: string;
+  sourceBranch: string;
+  targetBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  htmlUrl: string;
+  draft: boolean;
+  merged: boolean;
+  checksStatus?: 'success' | 'failure' | 'pending' | 'none';
+}
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: opts.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github.v3+json',
-        'User-Agent': 'FixFlow-AI/1.0',
-        ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error(`GitHub fetch error: ${msg}`);
-    return { data: null, status: 0, error: `Network error: ${msg}` };
-  }
-
-  if (response.status === 401) {
-    return { data: null, status: 401, error: 'GitHub token is invalid or expired.' };
-  }
-  if (response.status === 403) {
-    const body = await response.text().catch(() => '');
-    if (body.includes('rate limit')) {
-      const reset = response.headers.get('x-ratelimit-reset');
-      const resetTime = reset ? new Date(parseInt(reset, 10) * 1000).toISOString() : 'unknown';
-      return { data: null, status: 403, error: `GitHub rate limit reached. Resets at ${resetTime}.` };
+export class GitHubService {
+  private getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'FixFlow-AI-Platform',
+    };
+    if (config.githubToken) {
+      headers.Authorization = `Bearer ${config.githubToken}`;
     }
-    return { data: null, status: 403, error: 'GitHub permission denied.' };
-  }
-  if (response.status === 404) {
-    return { data: null, status: 404, error: 'GitHub resource not found.' };
-  }
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    return { data: null, status: response.status, error: `GitHub API error ${response.status}: ${body.slice(0, 200)}` };
+    return headers;
   }
 
-  try {
-    const data = await response.json() as T;
-    return { data, status: response.status, error: null };
-  } catch {
-    return { data: null, status: response.status, error: 'Failed to parse GitHub response.' };
-  }
-}
+  /**
+   * Verify credentials and retrieve current authenticated user details.
+   */
+  async verifyAuth(): Promise<GitHubAuthStatus> {
+    if (!config.githubToken || config.githubToken.trim().length === 0) {
+      return {
+        configured: false,
+        authenticated: false,
+        username: null,
+        name: null,
+        avatarUrl: null,
+        scopes: [],
+        rateLimit: null,
+        error: 'GITHUB_TOKEN is not configured in the backend environment.',
+        setupInstructions: [
+          'Create a GitHub Personal Access Token (classic or fine-grained) with `repo` or `read:user` scope at https://github.com/settings/tokens',
+          'Add GITHUB_TOKEN=your_token_here in your backend .env file or environment variables',
+          'Optionally add GITHUB_WEBHOOK_SECRET=your_secret for real-time webhook sync',
+          'Restart the FixFlow AI backend to activate the live integration',
+        ],
+      };
+    }
 
-/** Verify the GitHub token and return the authenticated user. */
-export async function verifyGitHubToken(): Promise<GitHubStatus> {
-  if (!isGitHubConfigured()) {
+    try {
+      const res = await fetch(`${config.githubApiUrl}/user`, {
+        headers: this.getHeaders(),
+      });
+
+      const rateLimit = {
+        limit: parseInt(res.headers.get('x-ratelimit-limit') || '0', 10),
+        remaining: parseInt(res.headers.get('x-ratelimit-remaining') || '0', 10),
+        reset: parseInt(res.headers.get('x-ratelimit-reset') || '0', 10),
+      };
+
+      const scopesHeader = res.headers.get('x-oauth-scopes');
+      const scopes = scopesHeader ? scopesHeader.split(',').map((s) => s.trim()) : [];
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          return {
+            configured: true,
+            authenticated: false,
+            username: null,
+            name: null,
+            avatarUrl: null,
+            scopes: [],
+            rateLimit,
+            error: 'GitHub Token is invalid or expired. Check your GITHUB_TOKEN in .env',
+          };
+        }
+        if (res.status === 403 && rateLimit.remaining === 0) {
+          const resetTime = new Date(rateLimit.reset * 1000).toLocaleTimeString();
+          return {
+            configured: true,
+            authenticated: false,
+            username: null,
+            name: null,
+            avatarUrl: null,
+            scopes: [],
+            rateLimit,
+            error: `GitHub API rate limit exceeded. Resets at ${resetTime}.`,
+          };
+        }
+        return {
+          configured: true,
+          authenticated: false,
+          username: null,
+          name: null,
+          avatarUrl: null,
+          scopes: [],
+          rateLimit,
+          error: `GitHub API error: HTTP ${res.status}`,
+        };
+      }
+
+      const user = await res.json() as any;
+      return {
+        configured: true,
+        authenticated: true,
+        username: user.login,
+        name: user.name || user.login,
+        avatarUrl: user.avatar_url,
+        scopes,
+        rateLimit,
+      };
+    } catch (err) {
+      log.error('Failed to verify GitHub auth', err);
+      return {
+        configured: true,
+        authenticated: false,
+        username: null,
+        name: null,
+        avatarUrl: null,
+        scopes: [],
+        rateLimit: null,
+        error: `Network error connecting to GitHub API (${err instanceof Error ? err.message : String(err)})`,
+      };
+    }
+  }
+
+  /**
+   * List accessible repositories for the authenticated user.
+   */
+  async listRepositories(page = 1, perPage = 30): Promise<GitHubRepositoryItem[]> {
+    if (!config.githubToken) throw new Error('GitHub token not configured');
+
+    const res = await fetch(
+      `${config.githubApiUrl}/user/repos?sort=updated&per_page=${perPage}&page=${page}`,
+      { headers: this.getHeaders() }
+    );
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`GitHub API error (${res.status}): ${err.slice(0, 200)}`);
+    }
+
+    const repos = await res.json() as any[];
+    return repos.map((r) => ({
+      id: r.id,
+      name: r.name,
+      fullName: r.full_name,
+      owner: r.owner.login,
+      description: r.description,
+      isPrivate: r.private,
+      defaultBranch: r.default_branch || 'main',
+      language: r.language,
+      stars: r.stargazers_count,
+      forks: r.forks_count,
+      openIssuesCount: r.open_issues_count,
+      htmlUrl: r.html_url,
+      cloneUrl: r.clone_url,
+      updatedAt: r.updated_at,
+      pushedAt: r.pushed_at,
+    }));
+  }
+
+  /**
+   * Get single repository details.
+   */
+  async getRepository(owner: string, repo: string): Promise<GitHubRepositoryItem> {
+    const res = await fetch(`${config.githubApiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+      headers: this.getHeaders(),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Repository not found on GitHub (${owner}/${repo}): HTTP ${res.status}`);
+    }
+
+    const r = await res.json() as any;
     return {
-      configured: false,
-      login: null,
-      name: null,
-      avatarUrl: null,
-      rateLimitRemaining: null,
-      rateLimitReset: null,
-      error: 'GitHub token not configured. Set the GITHUB_TOKEN environment variable.',
+      id: r.id,
+      name: r.name,
+      fullName: r.full_name,
+      owner: r.owner.login,
+      description: r.description,
+      isPrivate: r.private,
+      defaultBranch: r.default_branch || 'main',
+      language: r.language,
+      stars: r.stargazers_count,
+      forks: r.forks_count,
+      openIssuesCount: r.open_issues_count,
+      htmlUrl: r.html_url,
+      cloneUrl: r.clone_url,
+      updatedAt: r.updated_at,
+      pushedAt: r.pushed_at,
     };
   }
 
-  const { data, error } = await ghFetch<{ login: string; name: string; avatar_url: string }>('/user');
-  if (error || !data) {
-    return { configured: true, login: null, name: null, avatarUrl: null, rateLimitRemaining: null, rateLimitReset: null, error: error ?? 'Unknown error' };
+  /**
+   * Fetch issues for a repository.
+   */
+  async listIssues(owner: string, repo: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<GitHubIssueItem[]> {
+    const res = await fetch(
+      `${config.githubApiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=${state}&per_page=50`,
+      { headers: this.getHeaders() }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to load issues for ${owner}/${repo}: HTTP ${res.status}`);
+    }
+
+    const issues = await res.json() as any[];
+    // Filter out pull requests as GitHub issues endpoint returns both
+    return issues
+      .filter((i) => !i.pull_request)
+      .map((i) => ({
+        id: i.id,
+        number: i.number,
+        title: i.title,
+        body: i.body,
+        state: i.state,
+        author: i.user?.login || 'unknown',
+        authorAvatar: i.user?.avatar_url,
+        labels: (i.labels || []).map((l: any) => ({ name: l.name, color: l.color })),
+        assignees: (i.assignees || []).map((a: any) => a.login),
+        createdAt: i.created_at,
+        updatedAt: i.updated_at,
+        htmlUrl: i.html_url,
+        commentsCount: i.comments || 0,
+      }));
   }
 
-  const { data: rateData } = await ghFetch<{ rate: { remaining: number; reset: number } }>('/rate_limit');
-  return {
-    configured: true,
-    login: data.login,
-    name: data.name,
-    avatarUrl: data.avatar_url,
-    rateLimitRemaining: rateData?.rate?.remaining ?? null,
-    rateLimitReset: rateData?.rate?.reset ? new Date(rateData.rate.reset * 1000).toISOString() : null,
-    error: null,
-  };
-}
+  /**
+   * Fetch pull requests for a repository.
+   */
+  async listPullRequests(owner: string, repo: string, state: 'open' | 'closed' | 'all' = 'open'): Promise<GitHubPullRequestItem[]> {
+    const res = await fetch(
+      `${config.githubApiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=${state}&per_page=50`,
+      { headers: this.getHeaders() }
+    );
 
-interface GHRepo {
-  id: number;
-  name: string;
-  full_name: string;
-  description: string | null;
-  private: boolean;
-  owner: { login: string };
-  default_branch: string;
-  language: string | null;
-  stargazers_count: number;
-  open_issues_count: number;
-  updated_at: string;
-  pushed_at: string;
-  clone_url: string;
-  html_url: string;
-}
+    if (!res.ok) {
+      throw new Error(`Failed to load pull requests for ${owner}/${repo}: HTTP ${res.status}`);
+    }
 
-/** List repositories accessible to the authenticated user. */
-export async function listGitHubRepos(
-  opts: { type?: 'all' | 'public' | 'private'; perPage?: number } = {},
-): Promise<{ repos: Partial<Repository>[]; error: string | null }> {
-  const perPage = opts.perPage ?? 30;
-  const type = opts.type ?? 'all';
-
-  const { data, error } = await ghFetch<GHRepo[]>(`/user/repos?type=${type}&per_page=${perPage}&sort=updated`);
-  if (error || !data) {
-    return { repos: [], error: error ?? 'Failed to list repositories' };
-  }
-
-  const repos: Partial<Repository>[] = data.map((r) => ({
-    name: r.name,
-    description: r.description ?? '',
-    provider: 'github',
-    path: r.full_name,
-    owner: r.owner.login,
-    fullName: r.full_name,
-    defaultBranch: r.default_branch,
-    visibility: r.private ? 'private' : 'public',
-    language: r.language,
-    stars: r.stargazers_count,
-    openIssues: r.open_issues_count,
-    openPRs: 0,
-    lastCommitAt: r.pushed_at,
-  }));
-
-  return { repos, error: null };
-}
-
-/** Get a specific GitHub repository. */
-export async function getGitHubRepo(fullName: string): Promise<{ repo: Partial<Repository> | null; error: string | null }> {
-  const { data, error } = await ghFetch<GHRepo>(`/repos/${fullName}`);
-  if (error || !data) return { repo: null, error };
-
-  return {
-    repo: {
-      name: data.name,
-      description: data.description ?? '',
-      provider: 'github',
-      path: data.full_name,
-      owner: data.owner.login,
-      fullName: data.full_name,
-      defaultBranch: data.default_branch,
-      visibility: data.private ? 'private' : 'public',
-      language: data.language,
-      stars: data.stargazers_count,
-      openIssues: data.open_issues_count,
-      openPRs: 0,
-      lastCommitAt: data.pushed_at,
-    },
-    error: null,
-  };
-}
-
-/** List branches for a GitHub repository. */
-export async function getGitHubBranches(fullName: string, defaultBranch: string): Promise<{ branches: RepositoryBranch[]; error: string | null }> {
-  const { data, error } = await ghFetch<{ name: string; commit: { sha: string; commit: { message: string; committer: { date: string; name: string } } }; protected: boolean }[]>(
-    `/repos/${fullName}/branches?per_page=50`,
-  );
-  if (error || !data) return { branches: [], error };
-
-  const branches: RepositoryBranch[] = data.map((b) => ({
-    name: b.name,
-    sha: b.commit.sha.slice(0, 12),
-    isDefault: b.name === defaultBranch,
-    isProtected: b.protected,
-    lastCommitMessage: b.commit.commit.message?.split('\n')[0] ?? null,
-    lastCommitAt: b.commit.commit.committer?.date ?? null,
-    lastCommitAuthor: b.commit.commit.committer?.name ?? null,
-    ahead: 0,
-    behind: 0,
-  }));
-
-  return { branches, error: null };
-}
-
-/** List commits for a GitHub repository. */
-export async function getGitHubCommits(
-  fullName: string,
-  opts: { perPage?: number; page?: number; sha?: string } = {},
-): Promise<{ commits: RepositoryCommit[]; error: string | null }> {
-  const perPage = opts.perPage ?? 20;
-  const page = opts.page ?? 1;
-  const sha = opts.sha ? `&sha=${encodeURIComponent(opts.sha)}` : '';
-
-  const { data, error } = await ghFetch<{
-    sha: string;
-    commit: { message: string; author: { name: string; email: string; date: string } };
-    parents: { sha: string }[];
-  }[]>(`/repos/${fullName}/commits?per_page=${perPage}&page=${page}${sha}`);
-
-  if (error || !data) return { commits: [], error };
-
-  const commits: RepositoryCommit[] = data.map((c) => ({
-    sha: c.sha,
-    shortSha: c.sha.slice(0, 8),
-    message: c.commit.message.split('\n')[0] ?? '',
-    author: c.commit.author.name,
-    authorEmail: c.commit.author.email,
-    date: c.commit.author.date,
-    filesChanged: 0,
-    additions: 0,
-    deletions: 0,
-    parents: c.parents.map((p) => p.sha.slice(0, 8)),
-  }));
-
-  return { commits, error: null };
-}
-
-/** Get a specific commit detail. */
-export async function getGitHubCommitDetail(fullName: string, sha: string): Promise<{ commit: RepositoryCommitDetail | null; error: string | null }> {
-  const { data, error } = await ghFetch<{
-    sha: string;
-    commit: { message: string; author: { name: string; email: string; date: string } };
-    parents: { sha: string }[];
-    stats: { additions: number; deletions: number; total: number };
-    files: { filename: string; status: string; additions: number; deletions: number; patch?: string }[];
-  }>(`/repos/${fullName}/commits/${sha}`);
-
-  if (error || !data) return { commit: null, error };
-
-  return {
-    commit: {
-      sha: data.sha,
-      shortSha: data.sha.slice(0, 8),
-      message: data.commit.message.split('\n')[0] ?? '',
-      author: data.commit.author.name,
-      authorEmail: data.commit.author.email,
-      date: data.commit.author.date,
-      filesChanged: data.files?.length ?? 0,
-      additions: data.stats?.additions ?? 0,
-      deletions: data.stats?.deletions ?? 0,
-      parents: data.parents.map((p) => p.sha.slice(0, 8)),
-      diff: data.files?.map((f) => f.patch ?? '').join('\n') ?? '',
-      files: (data.files ?? []).map((f) => ({
-        filename: f.filename,
-        status: f.status,
-        additions: f.additions,
-        deletions: f.deletions,
-        patch: f.patch ?? '',
-      })),
-    },
-    error: null,
-  };
-}
-
-/** Get file tree for a GitHub repository. */
-export async function getGitHubFileTree(
-  fullName: string,
-  treeSha: string = 'HEAD',
-  path: string = '',
-): Promise<{ entries: GitFileEntry[]; error: string | null }> {
-  const { data, error } = await ghFetch<{
-    tree: { path: string; type: 'blob' | 'tree'; size?: number; sha: string }[];
-    truncated: boolean;
-  }>(`/repos/${fullName}/git/trees/${treeSha}?recursive=0`);
-
-  if (error || !data) return { entries: [], error };
-
-  const prefix = path ? path.replace(/\/$/, '') + '/' : '';
-  const entries: GitFileEntry[] = data.tree
-    .filter((item) => {
-      if (!prefix) return true;
-      return item.path.startsWith(prefix) && !item.path.slice(prefix.length).includes('/');
-    })
-    .map((item) => ({
-      path: item.path,
-      name: item.path.split('/').pop() ?? item.path,
-      type: item.type === 'tree' ? 'dir' : 'file',
-      size: item.size ?? 0,
-      language: item.type === 'blob' ? detectLanguage(item.path) : null,
+    const pulls = await res.json() as any[];
+    return pulls.map((p) => ({
+      id: p.id,
+      number: p.number,
+      title: p.title,
+      body: p.body,
+      state: p.merged_at ? 'merged' : p.state,
+      author: p.user?.login || 'unknown',
+      authorAvatar: p.user?.avatar_url,
+      sourceBranch: p.head?.ref || '',
+      targetBranch: p.base?.ref || '',
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+      htmlUrl: p.html_url,
+      draft: !!p.draft,
+      merged: !!p.merged_at,
+      checksStatus: 'none',
     }));
+  }
 
-  return { entries, error: null };
-}
+  /**
+   * Create an issue on GitHub.
+   */
+  async createIssue(
+    owner: string,
+    repo: string,
+    data: { title: string; body: string; labels?: string[]; assignees?: string[] }
+  ): Promise<GitHubIssueItem> {
+    if (!config.githubToken) throw new Error('GitHub token not configured for write operations');
 
-/** Get GitHub issues. */
-export async function getGitHubIssues(
-  fullName: string,
-  opts: { state?: 'open' | 'closed' | 'all'; perPage?: number; page?: number } = {},
-): Promise<{ issues: RepositoryIssue[]; error: string | null }> {
-  const state = opts.state ?? 'open';
-  const perPage = opts.perPage ?? 30;
-  const page = opts.page ?? 1;
+    const res = await fetch(
+      `${config.githubApiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
+      {
+        method: 'POST',
+        headers: {
+          ...this.getHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      }
+    );
 
-  // GitHub's /issues endpoint returns both issues AND PRs. Filter PRs out.
-  const { data, error } = await ghFetch<{
-    id: number;
-    number: number;
-    title: string;
-    body: string | null;
-    state: string;
-    user: { login: string };
-    assignee: { login: string } | null;
-    labels: { name: string }[];
-    created_at: string;
-    updated_at: string;
-    html_url: string;
-    pull_request?: unknown;
-  }[]>(`/repos/${fullName}/issues?state=${state}&per_page=${perPage}&page=${page}`);
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to create issue on GitHub: ${err.slice(0, 200)}`);
+    }
 
-  if (error || !data) return { issues: [], error };
-
-  const issues: RepositoryIssue[] = data
-    .filter((i) => !i.pull_request) // exclude PRs
-    .map((i) => ({
-      id: String(i.id),
+    const i = await res.json() as any;
+    return {
+      id: i.id,
       number: i.number,
       title: i.title,
-      body: i.body ?? '',
-      state: i.state === 'open' ? 'open' : 'closed',
-      author: i.user.login,
-      assignee: i.assignee?.login ?? null,
-      labels: i.labels.map((l) => l.name),
+      body: i.body,
+      state: i.state,
+      author: i.user?.login || 'unknown',
+      authorAvatar: i.user?.avatar_url,
+      labels: (i.labels || []).map((l: any) => ({ name: l.name, color: l.color })),
+      assignees: (i.assignees || []).map((a: any) => a.login),
       createdAt: i.created_at,
       updatedAt: i.updated_at,
-      url: i.html_url,
-    }));
+      htmlUrl: i.html_url,
+      commentsCount: 0,
+    };
+  }
 
-  return { issues, error: null };
+  /**
+   * Create a pull request on GitHub.
+   */
+  async createPullRequest(
+    owner: string,
+    repo: string,
+    data: { title: string; head: string; base: string; body: string; draft?: boolean }
+  ): Promise<GitHubPullRequestItem> {
+    if (!config.githubToken) throw new Error('GitHub token not configured for write operations');
+
+    const res = await fetch(
+      `${config.githubApiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,
+      {
+        method: 'POST',
+        headers: {
+          ...this.getHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      }
+    );
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to create pull request on GitHub: ${err.slice(0, 200)}`);
+    }
+
+    const p = await res.json() as any;
+    return {
+      id: p.id,
+      number: p.number,
+      title: p.title,
+      body: p.body,
+      state: 'open',
+      author: p.user?.login || 'unknown',
+      authorAvatar: p.user?.avatar_url,
+      sourceBranch: p.head?.ref || '',
+      targetBranch: p.base?.ref || '',
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+      htmlUrl: p.html_url,
+      draft: !!p.draft,
+      merged: false,
+      checksStatus: 'none',
+    };
+  }
 }
 
-/** Get GitHub pull requests. */
-export async function getGitHubPRs(
-  fullName: string,
-  opts: { state?: 'open' | 'closed' | 'all'; perPage?: number; page?: number } = {},
-): Promise<{ prs: RepositoryPR[]; error: string | null }> {
-  const state = opts.state ?? 'open';
-  const perPage = opts.perPage ?? 20;
-  const page = opts.page ?? 1;
-
-  const { data, error } = await ghFetch<{
-    id: number;
-    number: number;
-    title: string;
-    body: string | null;
-    state: string;
-    draft: boolean;
-    user: { login: string };
-    head: { ref: string };
-    base: { ref: string };
-    created_at: string;
-    updated_at: string;
-    merged_at: string | null;
-    html_url: string;
-    additions: number;
-    deletions: number;
-    review_comments: number;
-  }[]>(`/repos/${fullName}/pulls?state=${state}&per_page=${perPage}&page=${page}`);
-
-  if (error || !data) return { prs: [], error };
-
-  const prs: RepositoryPR[] = data.map((pr) => ({
-    id: String(pr.id),
-    number: pr.number,
-    title: pr.title,
-    body: pr.body ?? '',
-    state: pr.draft ? 'draft' : pr.merged_at ? 'merged' : pr.state === 'open' ? 'open' : 'closed',
-    author: pr.user.login,
-    sourceBranch: pr.head.ref,
-    targetBranch: pr.base.ref,
-    createdAt: pr.created_at,
-    updatedAt: pr.updated_at,
-    mergedAt: pr.merged_at,
-    url: pr.html_url,
-    checks: [],
-    additions: pr.additions ?? 0,
-    deletions: pr.deletions ?? 0,
-    reviewStatus: 'pending',
-  }));
-
-  return { prs, error: null };
-}
-
-/** Get file content from a GitHub repository (raw text only, capped at 500KB). */
-export async function getGitHubFileContent(
-  fullName: string,
-  filePath: string,
-  ref: string = 'HEAD',
-): Promise<{ content: string | null; size: number; error: string | null }> {
-  const { data, error } = await ghFetch<{ content: string; size: number; encoding: string }>(
-    `/repos/${fullName}/contents/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`,
-  );
-
-  if (error || !data) return { content: null, size: 0, error };
-  if (data.size > 500_000) return { content: null, size: data.size, error: 'File too large to display (> 500KB).' };
-
-  const content = data.encoding === 'base64'
-    ? Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8')
-    : data.content;
-
-  return { content, size: data.size, error: null };
-}
+export const githubService = new GitHubService();

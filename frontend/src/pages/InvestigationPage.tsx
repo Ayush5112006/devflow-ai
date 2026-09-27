@@ -1629,7 +1629,7 @@ function ReportTab({ inv, gitInfo }: { inv: Investigation; gitInfo: GitInfo | nu
                     <dt>Modified files</dt>
                     <dd>
                       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                        {gitInfo.modifiedFiles.slice(0, 8).map((f) => (
+                        {gitInfo.modifiedFiles.slice(0, 8).map((f: string) => (
                           <span key={f} className="chip mono">{f}</span>
                         ))}
                         {gitInfo.modifiedFiles.length > 8 && (
@@ -1664,7 +1664,7 @@ function ReportTab({ inv, gitInfo }: { inv: Investigation; gitInfo: GitInfo | nu
                 <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
                   <p className="panel-title" style={{ marginBottom: 8 }}>Recent commits</p>
                   <div className="stack-sm">
-                    {gitInfo.recentCommits.map((c) => (
+                    {gitInfo.recentCommits.map((c: any) => (
                       <div key={c.hash} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
                         <span className="chip mono" style={{ fontSize: 10 }}>{c.hash}</span>
                         <span style={{ fontSize: 12.5, color: 'var(--muted)', flex: 1 }}>{c.message}</span>

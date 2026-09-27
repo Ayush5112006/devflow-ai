@@ -1,17 +1,10 @@
 /**
- * Lightweight Git information helpers.
- * Uses only read-only git commands from the allowed programs list.
- * All user-supplied values (paths, branch names) are validated before use.
+ * Safe, comprehensive Git utilities.
+ * Uses only allowed read-only or explicit confirmed operations via spawn.
  */
+import path from 'node:path';
+import fs from 'node:fs/promises';
 import { tryRun } from './exec.js';
-import type {
-  DetailedGitStatus,
-  GitStatusFile,
-  RepositoryBranch,
-  RepositoryCommit,
-  RepositoryCommitDetail,
-  GitFileEntry,
-} from '../types/index.js';
 
 export interface GitInfo {
   available: boolean;
@@ -20,29 +13,82 @@ export interface GitInfo {
   latestMessage: string | null;
   latestAuthor: string | null;
   latestDate: string | null;
+  remoteUrl: string | null;
+  isClean: boolean;
+  status: {
+    modified: string[];
+    added: string[];
+    deleted: string[];
+    untracked: string[];
+    staged: string[];
+  };
   modifiedFiles: string[];
-  recentCommits: { hash: string; message: string; author: string; date: string }[];
+  recentCommits: GitCommitSummary[];
   suggestedBranch: string | null;
 }
 
-/** Safe branch-name pattern — no shell metacharacters, no path traversal. */
-const SAFE_REF = /^[a-zA-Z0-9._\-/]{1,200}$/;
-
-export function assertSafeRef(ref: string): string {
-  if (!SAFE_REF.test(ref)) throw new Error(`Unsafe git ref: ${ref}`);
-  return ref;
+export interface GitCommitSummary {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  authorEmail?: string;
+  date: string;
+  filesChanged?: number;
+  insertions?: number;
+  deletions?: number;
 }
 
-async function git(args: string, cwd: string): Promise<string | null> {
-  const result = await tryRun(`git ${args}`, { cwd, timeoutMs: 5000 });
+export interface GitCommitDetail extends GitCommitSummary {
+  fullDiff: string;
+  files: {
+    file: string;
+    status: 'modified' | 'added' | 'deleted' | 'renamed';
+    insertions: number;
+    deletions: number;
+  }[];
+}
+
+export interface GitBranchInfo {
+  name: string;
+  isCurrent: boolean;
+  latestCommitHash: string;
+  latestCommitMessage: string;
+  author: string;
+  date: string;
+  ahead: number;
+  behind: number;
+  isProtected: boolean;
+}
+
+export interface GitTreeNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  sizeBytes?: number;
+  children?: GitTreeNode[];
+}
+
+async function git(args: string, cwd: string, timeoutMs = 8000): Promise<string | null> {
+  const result = await tryRun(`git ${args}`, { cwd, timeoutMs });
   if (result.exitCode !== 0) return null;
   return result.stdout.trim() || null;
 }
 
+/**
+ * Checks if a given directory path is inside or is a git work tree.
+ */
+export async function isGitRepository(repoPath: string): Promise<boolean> {
+  const isRepo = await git('rev-parse --is-inside-work-tree', repoPath);
+  return isRepo === 'true';
+}
+
+/**
+ * Get comprehensive Git metadata and working tree status.
+ */
 export async function getGitInfo(workspacePath: string, investigationId?: string): Promise<GitInfo> {
-  // Check if git is available in this directory
-  const branch = await git('rev-parse --abbrev-ref HEAD', workspacePath);
-  if (!branch) {
+  const isRepo = await isGitRepository(workspacePath);
+  if (!isRepo) {
     return {
       available: false,
       branch: null,
@@ -50,351 +96,327 @@ export async function getGitInfo(workspacePath: string, investigationId?: string
       latestMessage: null,
       latestAuthor: null,
       latestDate: null,
+      remoteUrl: null,
+      isClean: true,
+      status: { modified: [], added: [], deleted: [], untracked: [], staged: [] },
       modifiedFiles: [],
       recentCommits: [],
       suggestedBranch: null,
     };
   }
 
-  const [hash, message, author, date] = await Promise.all([
+  const [branch, hash, message, author, date, remote] = await Promise.all([
+    git('rev-parse --abbrev-ref HEAD', workspacePath),
     git('log -1 --format=%H', workspacePath),
     git('log -1 --format=%s', workspacePath),
     git('log -1 --format=%an', workspacePath),
     git('log -1 --format=%ci', workspacePath),
+    git('remote get-url origin', workspacePath),
   ]);
 
-  // Modified/untracked files
-  const statusOut = await git('status --short', workspacePath);
-  const modifiedFiles = statusOut
-    ? statusOut.split('\n').filter(Boolean).map((l) => l.slice(3).trim()).filter(Boolean)
-    : [];
+  // Working tree status parsing
+  const statusOut = await git('status --porcelain', workspacePath);
+  const status = {
+    modified: [] as string[],
+    added: [] as string[],
+    deleted: [] as string[],
+    untracked: [] as string[],
+    staged: [] as string[],
+  };
 
-  // Recent commits (last 5)
-  const logOut = await git('log -5 --format=%H%x09%s%x09%an%x09%ci', workspacePath);
-  const recentCommits = logOut
+  const modifiedFiles: string[] = [];
+
+  if (statusOut) {
+    const lines = statusOut.split('\n').filter(Boolean);
+    for (const line of lines) {
+      const x = line[0];
+      const y = line[1];
+      const filePath = line.slice(3).trim();
+
+      if (x === '?' && y === '?') {
+        status.untracked.push(filePath);
+        modifiedFiles.push(filePath);
+      } else {
+        if (x !== ' ' && x !== '?') {
+          status.staged.push(filePath);
+        }
+        if (y === 'M') {
+          status.modified.push(filePath);
+          modifiedFiles.push(filePath);
+        } else if (y === 'D') {
+          status.deleted.push(filePath);
+          modifiedFiles.push(filePath);
+        } else if (y === 'A' || x === 'A') {
+          status.added.push(filePath);
+          modifiedFiles.push(filePath);
+        } else if (x === 'M') {
+          status.modified.push(filePath);
+          modifiedFiles.push(filePath);
+        }
+      }
+    }
+  }
+
+  const isClean = modifiedFiles.length === 0 && status.staged.length === 0;
+
+  // Recent commits (last 10)
+  const logOut = await git('log -10 --format=%H%x09%s%x09%an%x09%ci', workspacePath);
+  const recentCommits: GitCommitSummary[] = logOut
     ? logOut.split('\n').filter(Boolean).map((line) => {
         const [h, m, a, d] = line.split('\t');
-        return { hash: (h ?? '').slice(0, 12), message: m ?? '', author: a ?? '', date: d ?? '' };
+        return {
+          hash: h ?? '',
+          shortHash: (h ?? '').slice(0, 10),
+          message: m ?? '',
+          author: a ?? '',
+          date: d ?? '',
+        };
       })
     : [];
 
-  // Suggest a branch name based on investigation id
   const shortId = investigationId ? investigationId.replace(/[^a-z0-9]/g, '-').slice(0, 20) : 'fix';
   const suggestedBranch = `fix/fixflow-${shortId}`;
 
   return {
     available: true,
-    branch,
+    branch: branch || 'main',
     latestCommit: hash ? hash.slice(0, 12) : null,
     latestMessage: message,
     latestAuthor: author,
     latestDate: date,
+    remoteUrl: remote,
+    isClean,
+    status,
     modifiedFiles,
     recentCommits,
     suggestedBranch,
   };
 }
 
-/** Returns detailed git status with staged/unstaged breakdown. */
-export async function getDetailedGitStatus(cwd: string): Promise<DetailedGitStatus> {
-  const branch = await git('rev-parse --abbrev-ref HEAD', cwd);
-  if (!branch) {
-    return {
-      available: false,
-      branch: null,
-      remoteBranch: null,
-      ahead: 0,
-      behind: 0,
-      clean: true,
-      files: [],
-      latestCommit: null,
-      latestMessage: null,
-      latestAuthor: null,
-      latestDate: null,
-      recentCommits: [],
-    };
-  }
+/**
+ * List branches in the repository.
+ */
+export async function getGitBranches(workspacePath: string): Promise<GitBranchInfo[]> {
+  const isRepo = await isGitRepository(workspacePath);
+  if (!isRepo) return [];
 
-  const [hash, message, author, date, porcelain, remoteBranchRaw] = await Promise.all([
-    git('log -1 --format=%H', cwd),
-    git('log -1 --format=%s', cwd),
-    git('log -1 --format=%an', cwd),
-    git('log -1 --format=%ci', cwd),
-    git('status --porcelain', cwd),
-    git('rev-parse --abbrev-ref --symbolic-full-name @{u}', cwd),
+  const [currentBranchName, rawBranchList] = await Promise.all([
+    git('rev-parse --abbrev-ref HEAD', workspacePath),
+    git('branch -a --no-color', workspacePath),
   ]);
 
-  const files: GitStatusFile[] = [];
-  if (porcelain) {
-    for (const line of porcelain.split('\n').filter(Boolean)) {
-      const staged = line[0] !== ' ' && line[0] !== '?';
-      const unstaged = line[1] !== ' ';
-      const rawStatus = line[0] === '?' ? '?' : staged ? line[0] : line[1];
-      const filePath = line.slice(3).trim().split(' -> ').pop() ?? '';
-      if (filePath) {
-        files.push({
-          path: filePath,
-          status: rawStatus as GitStatusFile['status'],
-          staged: staged && line[0] !== '?',
-        });
-        // If a file has both staged and unstaged changes, add it twice
-        if (staged && unstaged && line[0] !== '?') {
-          files.push({ path: filePath, status: line[1] as GitStatusFile['status'], staged: false });
+  const branches: GitBranchInfo[] = [];
+
+  if (rawBranchList) {
+    const lines = rawBranchList.split('\n').map((l) => l.trim()).filter(Boolean);
+
+    for (const line of lines) {
+      const isCurrentFromStar = line.startsWith('*');
+      const cleanedLine = line.replace(/^\*\s*/, '').trim();
+      if (!cleanedLine || cleanedLine.includes('->') || cleanedLine.includes('HEAD')) continue;
+
+      const cleanName = cleanedLine.replace(/^remotes\/origin\//, '').replace(/^origin\//, '');
+      const isCurrent = isCurrentFromStar || (!!currentBranchName && cleanName === currentBranchName.trim());
+      const isProtected = ['main', 'master', 'release', 'production'].includes(cleanName.toLowerCase());
+
+      const existingIndex = branches.findIndex((b) => b.name === cleanName);
+      if (existingIndex >= 0) {
+        if (isCurrent) {
+          branches[existingIndex].isCurrent = true;
         }
+      } else {
+        branches.push({
+          name: cleanName,
+          isCurrent,
+          latestCommitHash: '',
+          latestCommitMessage: '',
+          author: '',
+          date: '',
+          ahead: 0,
+          behind: 0,
+          isProtected,
+        });
       }
     }
   }
 
-  // Ahead / behind relative to the upstream
-  let ahead = 0;
-  let behind = 0;
-  if (remoteBranchRaw) {
-    const aheadRaw = await git(`rev-list --count ${remoteBranchRaw}..HEAD`, cwd);
-    const behindRaw = await git(`rev-list --count HEAD..${remoteBranchRaw}`, cwd);
-    ahead = parseInt(aheadRaw ?? '0', 10) || 0;
-    behind = parseInt(behindRaw ?? '0', 10) || 0;
-  }
-
-  const logOut = await git('log -10 --format=%H%x09%s%x09%an%x09%ci', cwd);
-  const recentCommits = logOut
-    ? logOut.split('\n').filter(Boolean).map((line) => {
-        const [h, m, a, d] = line.split('\t');
-        return { hash: (h ?? '').slice(0, 12), message: m ?? '', author: a ?? '', date: d ?? '' };
-      })
-    : [];
-
-  return {
-    available: true,
-    branch,
-    remoteBranch: remoteBranchRaw,
-    ahead,
-    behind,
-    clean: files.length === 0,
-    files,
-    latestCommit: hash ? hash.slice(0, 12) : null,
-    latestMessage: message,
-    latestAuthor: author,
-    latestDate: date,
-    recentCommits,
-  };
-}
-
-/** Returns the list of local branches. */
-export async function getGitBranches(cwd: string, defaultBranch: string): Promise<RepositoryBranch[]> {
-  // Format: refname:short | objectname:short | subject | authordateshort | authorname
-  const raw = await git(
-    'branch -a --format=%(refname:short)%x09%(objectname:short)%x09%(subject)%x09%(authordate:iso-strict)%x09%(authorname)%x09%(HEAD)',
-    cwd,
-  );
-  if (!raw) return [];
-
-  const branches: RepositoryBranch[] = [];
-  for (const line of raw.split('\n').filter(Boolean)) {
-    const parts = line.split('\t');
-    const name = parts[0]?.trim() ?? '';
-    const sha = parts[1]?.trim() ?? '';
-    const subject = parts[2]?.trim() ?? '';
-    const dateStr = parts[3]?.trim() ?? '';
-    const authorName = parts[4]?.trim() ?? '';
-
-    // Skip remote-tracking branches from the local list (those start with "remotes/")
-    if (name.startsWith('remotes/')) continue;
-    if (!name) continue;
-
-    branches.push({
-      name,
-      sha: sha.slice(0, 12),
-      isDefault: name === defaultBranch,
-      isProtected: name === defaultBranch || name === 'main' || name === 'master',
-      lastCommitMessage: subject || null,
-      lastCommitAt: dateStr || null,
-      lastCommitAuthor: authorName || null,
-      ahead: 0,
-      behind: 0,
-    });
+  // Ensure current branch exists and is marked current
+  const targetCurrent = currentBranchName ? currentBranchName.trim() : null;
+  if (targetCurrent) {
+    const cur = branches.find((b) => b.name === targetCurrent);
+    if (cur) {
+      cur.isCurrent = true;
+    } else {
+      branches.unshift({
+        name: targetCurrent,
+        isCurrent: true,
+        latestCommitHash: '',
+        latestCommitMessage: '',
+        author: '',
+        date: '',
+        ahead: 0,
+        behind: 0,
+        isProtected: ['main', 'master'].includes(targetCurrent.toLowerCase()),
+      });
+    }
+  } else if (branches.length > 0 && !branches.some((b) => b.isCurrent)) {
+    branches[0].isCurrent = true;
   }
 
   return branches;
 }
 
-/** Returns paginated commit history. */
+/**
+ * Get commit log with optional pagination.
+ */
 export async function getGitCommits(
-  cwd: string,
-  opts: { limit?: number; skip?: number; branch?: string } = {},
-): Promise<RepositoryCommit[]> {
-  const limit = Math.min(opts.limit ?? 20, 100);
-  const skip = opts.skip ?? 0;
-  const branch = opts.branch ? assertSafeRef(opts.branch) : 'HEAD';
+  workspacePath: string,
+  limit = 25,
+): Promise<GitCommitSummary[]> {
+  const isRepo = await isGitRepository(workspacePath);
+  if (!isRepo) return [];
 
-  // Format: hash | subject | author | author-email | date | numstat-summary
-  const raw = await git(
-    `log ${branch} --skip=${skip} -${limit} --format=%H%x09%s%x09%an%x09%ae%x09%ci --shortstat`,
-    cwd,
-  );
-  if (!raw) return [];
+  const out = await git(`log -${Math.min(limit, 100)} --format=%H%x09%s%x09%an%x09%ae%x09%ci`, workspacePath);
+  if (!out) return [];
 
-  const commits: RepositoryCommit[] = [];
-  // git log with --shortstat produces blocks:
-  // <hash>\t<subject>\t<author>\t<email>\t<date>
-  //  1 file changed, X insertions(+), Y deletions(-)
-  const blocks = raw.split('\n\n').filter(Boolean);
-
-  for (const block of blocks) {
-    const lines = block.trim().split('\n');
-    const headerLine = lines[0];
-    const statLine = lines[1]?.trim() ?? '';
-
-    const parts = headerLine?.split('\t') ?? [];
-    const sha = parts[0]?.trim() ?? '';
-    if (!sha) continue;
-
-    let filesChanged = 0;
-    let additions = 0;
-    let deletions = 0;
-    const filesMatch = statLine.match(/(\d+) file/);
-    const addMatch = statLine.match(/(\d+) insertion/);
-    const delMatch = statLine.match(/(\d+) deletion/);
-    if (filesMatch) filesChanged = parseInt(filesMatch[1], 10);
-    if (addMatch) additions = parseInt(addMatch[1], 10);
-    if (delMatch) deletions = parseInt(delMatch[1], 10);
-
-    commits.push({
-      sha: sha.slice(0, 40),
-      shortSha: sha.slice(0, 8),
-      message: parts[1]?.trim() ?? '',
-      author: parts[2]?.trim() ?? '',
-      authorEmail: parts[3]?.trim() ?? '',
-      date: parts[4]?.trim() ?? '',
-      filesChanged,
-      additions,
-      deletions,
-      parents: [],
-    });
-  }
-  return commits;
+  return out.split('\n').filter(Boolean).map((line) => {
+    const [h, m, a, email, d] = line.split('\t');
+    return {
+      hash: h ?? '',
+      shortHash: (h ?? '').slice(0, 10),
+      message: m ?? '',
+      author: a ?? '',
+      authorEmail: email ?? '',
+      date: d ?? '',
+    };
+  });
 }
 
-/** Returns commit detail including diff. */
-export async function getGitCommitDetail(cwd: string, sha: string): Promise<RepositoryCommitDetail | null> {
-  const safeSha = assertSafeRef(sha);
+/**
+ * Get details and diff for a specific commit hash.
+ */
+export async function getGitCommitDetail(
+  workspacePath: string,
+  hash: string,
+): Promise<GitCommitDetail | null> {
+  const isRepo = await isGitRepository(workspacePath);
+  if (!isRepo) return null;
 
-  const headerRaw = await git(
-    `show --format=%H%x09%s%x09%an%x09%ae%x09%ci%x09%P -s ${safeSha}`,
-    cwd,
-  );
-  if (!headerRaw) return null;
-
-  const parts = headerRaw.split('\t');
-  const fullSha = parts[0]?.trim() ?? safeSha;
-  const parents = parts[5]?.trim().split(' ').filter(Boolean) ?? [];
-
-  const diffRaw = await git(`show --stat --patch ${safeSha}`, cwd);
-  const diff = diffRaw ?? '';
-
-  // Parse file stats from diff
-  const files: RepositoryCommitDetail['files'] = [];
-  const diffSections = diff.split(/^diff --git /m).slice(1);
-  for (const section of diffSections) {
-    const fileMatch = section.match(/^a\/(.+?) b\/(.+?)$/m);
-    const filename = fileMatch ? fileMatch[2] : '';
-    if (!filename) continue;
-    const addMatch = section.match(/^\+\+\+ /m) ? (section.match(/^@@ .+? @@/gm) ?? []).length : 0;
-    const adds = (section.match(/^\+(?!\+\+)/gm) ?? []).length;
-    const dels = (section.match(/^-(?!--)/gm) ?? []).length;
-    files.push({
-      filename,
-      status: 'modified',
-      additions: adds,
-      deletions: dels,
-      patch: section.slice(0, 5000),
-    });
+  // Validate commit hash format
+  if (!/^[a-f0-9]{4,40}$/i.test(hash)) {
+    throw new Error('Invalid commit hash format');
   }
 
-  const shortStat = await git(`show --stat --no-patch ${safeSha}`, cwd);
-  const filesMatch = shortStat?.match(/(\d+) file/);
-  const addMatch = shortStat?.match(/(\d+) insertion/);
-  const delMatch = shortStat?.match(/(\d+) deletion/);
+  const [meta, diff, numstat] = await Promise.all([
+    git(`show -s --format=%H%x09%s%x09%an%x09%ae%x09%ci ${hash}`, workspacePath),
+    git(`show --format="" --patch ${hash}`, workspacePath),
+    git(`show --numstat --format="" ${hash}`, workspacePath),
+  ]);
 
-  return {
-    sha: fullSha,
-    shortSha: fullSha.slice(0, 8),
-    message: parts[1]?.trim() ?? '',
-    author: parts[2]?.trim() ?? '',
-    authorEmail: parts[3]?.trim() ?? '',
-    date: parts[4]?.trim() ?? '',
-    filesChanged: filesMatch ? parseInt(filesMatch[1], 10) : files.length,
-    additions: addMatch ? parseInt(addMatch[1], 10) : 0,
-    deletions: delMatch ? parseInt(delMatch[1], 10) : 0,
-    parents,
-    diff: diff.slice(0, 50_000),
-    files,
-  };
-}
+  if (!meta) return null;
+  const [fullHash, message, author, email, date] = meta.split('\t');
 
-/** Language detection from file extension. */
-const EXT_TO_LANG: Record<string, string> = {
-  ts: 'TypeScript', tsx: 'TypeScript', js: 'JavaScript', jsx: 'JavaScript',
-  mjs: 'JavaScript', cjs: 'JavaScript', py: 'Python', go: 'Go', rs: 'Rust',
-  java: 'Java', kt: 'Kotlin', cs: 'C#', cpp: 'C++', c: 'C', rb: 'Ruby',
-  php: 'PHP', swift: 'Swift', sql: 'SQL', sh: 'Shell', bash: 'Shell',
-  zsh: 'Shell', yml: 'YAML', yaml: 'YAML', json: 'JSON', md: 'Markdown',
-  html: 'HTML', css: 'CSS', scss: 'SCSS', sass: 'SASS', toml: 'TOML',
-  xml: 'XML', env: 'Env',
-};
+  const files: GitCommitDetail['files'] = [];
+  let totalInsertions = 0;
+  let totalDeletions = 0;
 
-export function detectLanguage(filePath: string): string | null {
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  return EXT_TO_LANG[ext] ?? null;
-}
-
-/** Build a file-tree list from the local git working tree. */
-export async function getGitFileTree(
-  cwd: string,
-  subpath: string = '',
-): Promise<GitFileEntry[]> {
-  // Use git ls-tree which is safe (no shell injection possible with the fixed args)
-  const target = subpath ? assertSafeRef(subpath) : 'HEAD';
-  const raw = await git(`ls-tree -r --name-only --full-tree ${target}`, cwd);
-  if (!raw) {
-    // Fallback: if not a full git repo snapshot, return nothing
-    return [];
-  }
-
-  const allPaths = raw.split('\n').filter(Boolean);
-
-  // Filter to the subpath if given
-  const prefix = subpath ? subpath.replace(/^\//, '') + '/' : '';
-  const filtered = prefix
-    ? allPaths.filter((p) => p.startsWith(prefix))
-    : allPaths;
-
-  const entries: GitFileEntry[] = [];
-  const seenDirs = new Set<string>();
-
-  for (const filePath of filtered) {
-    const relative = prefix ? filePath.slice(prefix.length) : filePath;
-    const parts = relative.split('/');
-
-    if (parts.length > 1) {
-      // This is a file in a subdirectory — emit the directory entry
-      const dirName = parts[0];
-      const dirPath = prefix + dirName;
-      if (!seenDirs.has(dirPath)) {
-        seenDirs.add(dirPath);
-        entries.push({ path: dirPath, name: dirName, type: 'dir', size: 0, language: null });
-      }
-    } else {
-      // Top-level file in this directory
-      const name = parts[0];
-      entries.push({
-        path: filePath,
-        name,
-        type: 'file',
-        size: 0,
-        language: detectLanguage(name),
+  if (numstat) {
+    for (const line of numstat.split('\n').filter(Boolean)) {
+      const [ins, del, file] = line.split('\t');
+      const i = parseInt(ins, 10) || 0;
+      const d = parseInt(del, 10) || 0;
+      totalInsertions += i;
+      totalDeletions += d;
+      files.push({
+        file: file ?? '',
+        status: 'modified',
+        insertions: i,
+        deletions: d,
       });
     }
   }
 
-  return entries;
+  return {
+    hash: fullHash ?? hash,
+    shortHash: (fullHash ?? hash).slice(0, 10),
+    message: message ?? '',
+    author: author ?? '',
+    authorEmail: email ?? '',
+    date: date ?? '',
+    fullDiff: diff ?? '',
+    filesChanged: files.length,
+    insertions: totalInsertions,
+    deletions: totalDeletions,
+    files,
+  };
+}
+
+/**
+ * Get the current working tree diff.
+ */
+export async function getGitWorkingDiff(workspacePath: string): Promise<string> {
+  const isRepo = await isGitRepository(workspacePath);
+  if (!isRepo) return '';
+  const diff = await git('diff', workspacePath);
+  const stagedDiff = await git('diff --staged', workspacePath);
+  return [diff, stagedDiff].filter(Boolean).join('\n');
+}
+
+/**
+ * Build a file tree representation of a directory.
+ */
+export async function buildDirectoryTree(
+  rootPath: string,
+  relDir = '',
+  depth = 0,
+  maxDepth = 5,
+): Promise<GitTreeNode[]> {
+  if (depth > maxDepth) return [];
+  const targetDir = path.join(rootPath, relDir);
+
+  const IGNORED = new Set(['.git', 'node_modules', 'dist', 'build', '.cache', '.turbo', '.next']);
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(targetDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const nodes: GitTreeNode[] = [];
+  for (const entry of entries) {
+    if (IGNORED.has(entry.name)) continue;
+    const relItemPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+
+    if (entry.isDirectory()) {
+      const children = await buildDirectoryTree(rootPath, relItemPath, depth + 1, maxDepth);
+      nodes.push({
+        name: entry.name,
+        path: relItemPath,
+        type: 'directory',
+        children,
+      });
+    } else if (entry.isFile()) {
+      let sizeBytes = 0;
+      try {
+        const stat = await fs.stat(path.join(targetDir, entry.name));
+        sizeBytes = stat.size;
+      } catch {
+        // ignore stat error
+      }
+      nodes.push({
+        name: entry.name,
+        path: relItemPath,
+        type: 'file',
+        sizeBytes,
+      });
+    }
+  }
+
+  // Sort directories first, then files alphabetically
+  nodes.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return nodes;
 }

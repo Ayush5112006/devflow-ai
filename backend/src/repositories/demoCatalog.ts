@@ -22,13 +22,28 @@ export const PROJECTS: ProjectTarget[] = [
 /** Resolves a project id to an absolute path, refusing anything outside the repo. */
 export function resolveProjectPath(projectId: string): { project: ProjectTarget; absPath: string } {
   const project = PROJECTS.find((p) => p.id === projectId);
-  if (!project) throw notFound(`Unknown project: ${projectId}`);
-  const absPath = path.resolve(config.repoRoot, project.sourcePath);
-  const rel = path.relative(config.repoRoot, absPath);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw badRequest('Project path resolves outside the repository', project.sourcePath);
+  if (project) {
+    const absPath = path.resolve(config.repoRoot, project.sourcePath);
+    const rel = path.relative(config.repoRoot, absPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw badRequest('Project path resolves outside the repository', project.sourcePath);
+    }
+    return { project, absPath };
   }
-  return { project, absPath };
+
+  // Fallback for connected repositories
+  const absPath = config.repoRoot;
+  return {
+    project: {
+      id: projectId,
+      name: projectId,
+      description: 'Connected Repository',
+      sourcePath: absPath,
+      isDemo: false,
+      bugCount: 0,
+    },
+    absPath,
+  };
 }
 
 export async function projectHasReadme(absPath: string): Promise<boolean> {

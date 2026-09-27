@@ -27,6 +27,7 @@ import { PerformancePage } from './pages/PerformancePage.js';
 import { RepositoriesPage } from './pages/RepositoriesPage.js';
 import { RepositoryDetailPage } from './pages/RepositoryDetailPage.js';
 import { MonitoringPage } from './pages/MonitoringPage.js';
+import { PostmortemsPage } from './pages/PostmortemsPage.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { ToastProvider } from './components/ToastProvider.js';
 import { CommandPalette } from './components/CommandPalette.js';
@@ -72,6 +73,7 @@ const NAV_SECTIONS = [
     items: [
       { to: '/incidents', icon: '⚡', label: 'Incidents' },
       { to: '/monitoring', icon: '◉', label: 'Monitoring' },
+      { to: '/postmortems', icon: '◧', label: 'Postmortems' },
     ],
   },
   {
@@ -102,6 +104,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/new': 'New Investigation',
   '/incidents': 'Incidents',
   '/monitoring': 'Monitoring',
+  '/postmortems': 'Postmortems',
   '/debugging': 'Log Intelligence',
   '/code-intelligence': 'Code Intelligence',
   '/code-review': 'Code Review',
@@ -123,7 +126,6 @@ const PAGE_TITLES: Record<string, string> = {
 
 function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/investigations/')) return 'Investigation Detail';
-  if (pathname.startsWith('/repositories/') && pathname !== '/repositories') return 'Repository Detail';
   return PAGE_TITLES[pathname] ?? 'FixFlow AI';
 }
 
@@ -295,8 +297,9 @@ export function App() {
               <Route path="/dependencies" element={<DependenciesPage />} />
               <Route path="/performance" element={<PerformancePage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
-              <Route path="/repositories/:id" element={<RepositoryDetailPage />} />
+              <Route path="/repositories/:repositoryId" element={<RepositoryDetailPage />} />
               <Route path="/monitoring" element={<MonitoringPage />} />
+              <Route path="/postmortems" element={<PostmortemsPage />} />
               <Route
                 path="*"
                 element={

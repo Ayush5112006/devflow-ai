@@ -1,5 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { api } from '../services/api.js';
 import { Card } from '../components/Card.js';
+import { Badge } from '../components/Badge.js';
+import type { Investigation } from '../types/index.js';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 type Status = 'confirmed' | 'potential' | 'review';
@@ -119,16 +123,56 @@ export function SecurityPage() {
   const [selected, setSelected] = useState<Finding | null>(null);
   const [severityFilter, setSeverityFilter] = useState<string>('all');
 
-  const filtered = FINDINGS
+  /* Pull security-related findings from real completed investigations */
+  const [liveFindings, setLiveFindings] = useState<Finding[]>([]);
+  const [liveSource, setLiveSource] = useState<{ id: string; title: string } | null>(null);
+
+  useEffect(() => {
+    api.listInvestigations()
+      .then(({ investigations }) => {
+        const completed = investigations.filter((i: any) => i.status === 'completed');
+        if (completed.length === 0) return;
+        // Use the most recent completed investigation
+        api.getInvestigation((completed[0] as any).id).then(({ investigation }) => {
+          const secFindings: Finding[] = investigation.findings
+            .filter((f) => ['high', 'medium'].includes(f.severity))
+            .map((f, i) => ({
+              id: `INV-SEC-${String(i + 1).padStart(3, '0')}`,
+              title: f.title,
+              file: f.files[0] ?? 'unknown',
+              line: 0,
+              category: f.agent === 'database' ? 'Injection'
+                : f.agent === 'api' ? 'API Security'
+                : f.agent === 'code' ? 'Input Handling'
+                : 'Configuration',
+              severity: f.severity as Severity,
+              status: 'confirmed' as Status,
+              description: f.summary,
+              evidence: f.evidence.map((e) => e.description).join('\n') || f.impact,
+              recommendation: `Reviewed by ${f.agent} agent. Confidence: ${Math.round(f.confidence * 100)}%`,
+            }));
+          if (secFindings.length > 0) {
+            setLiveFindings(secFindings);
+            setLiveSource({ id: investigation.id, title: investigation.bug.title });
+          }
+        }).catch(() => {});
+      })
+      .catch(() => {});
+  }, []);
+
+  const isLive = liveFindings.length > 0;
+  const allFindings = isLive ? liveFindings : FINDINGS;
+
+  const filtered = allFindings
     .filter(f => category === 'All' || f.category === category)
     .filter(f => severityFilter === 'all' || f.severity === severityFilter);
 
   const counts = {
-    critical: FINDINGS.filter(f => f.severity === 'critical').length,
-    high: FINDINGS.filter(f => f.severity === 'high').length,
-    medium: FINDINGS.filter(f => f.severity === 'medium').length,
-    low: FINDINGS.filter(f => f.severity === 'low').length,
-    confirmed: FINDINGS.filter(f => f.status === 'confirmed').length,
+    critical: allFindings.filter(f => f.severity === 'critical').length,
+    high: allFindings.filter(f => f.severity === 'high').length,
+    medium: allFindings.filter(f => f.severity === 'medium').length,
+    low: allFindings.filter(f => f.severity === 'low').length,
+    confirmed: allFindings.filter(f => f.status === 'confirmed').length,
   };
 
   return (
@@ -138,11 +182,33 @@ export function SecurityPage() {
         <div>
           <h1 className="page-title">Security Review</h1>
           <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
-            Static analysis findings for the InsightBoard project. Review confirmed issues first.
+            {isLive
+              ? `Security findings from investigation: "${liveSource?.title?.slice(0, 50)}"`
+              : 'Static analysis findings for the InsightBoard demo project. Review confirmed issues first.'}
           </p>
         </div>
-        <span className="demo-notice">DEMO DATA</span>
+        {isLive
+          ? <Badge variant="success" dot>LIVE</Badge>
+          : <span className="demo-notice">DEMO DATA</span>}
       </div>
+
+      {/* Live source banner */}
+      {isLive && liveSource && (
+        <div className="banner banner-ok" style={{ borderColor: 'var(--accent)', background: 'rgba(124,92,252,.06)' }}>
+          <div>
+            <p className="banner-title" style={{ color: 'var(--accent)' }}>
+              ✓ Real security findings from completed investigation
+            </p>
+            <p className="banner-text">
+              High/medium severity findings surfaced by AI agents during investigation{' '}
+              <span className="mono" style={{ fontSize: 11 }}>{liveSource.id.slice(0, 8)}</span>.
+            </p>
+          </div>
+          <Link to={`/investigations/${liveSource.id}`} className="btn btn-sm" style={{ flex: 'none' }}>
+            View investigation →
+          </Link>
+        </div>
+      )}
 
       {/* Summary bar */}
       <div className="banner banner-warn">
@@ -152,7 +218,7 @@ export function SecurityPage() {
             {counts.confirmed} confirmed issue{counts.confirmed !== 1 ? 's' : ''} require attention
           </div>
           <p className="banner-text">
-            {counts.high} high-severity · {counts.medium} medium-severity · {counts.low} low-severity findings across {FINDINGS.length} total
+            {counts.high} high-severity · {counts.medium} medium-severity · {counts.low} low-severity findings across {allFindings.length} total
           </p>
         </div>
         <button className="btn btn-sm" onClick={() => setSeverityFilter('all')}>Show All</button>
