@@ -63,7 +63,12 @@ const EVIDENCE_ROOT = path.join(config.demoDir, 'evidence');
 
 async function evidence(name: string, kind: DemoBug['evidence'][number]['kind']) {
   const abs = path.join(EVIDENCE_ROOT, name);
-  const content = await readTextFile(abs);
+  let content = '';
+  try {
+    content = await readTextFile(abs);
+  } catch {
+    // Demo evidence is optional in deployments that only bundle the backend.
+  }
   return { name: path.basename(name), kind, content };
 }
 
